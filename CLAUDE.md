@@ -213,6 +213,16 @@ Deux points à ne pas rater :
   indéfiniment. D'où `MAX_ORPHAN_SWITCHES` (3 bascules consécutives sans revoir
   le clavier, compteur remis à zéro dès son retour). En usage normal il ne se
   déclenche jamais.
+- **À revoir côté Linux — `last_event` sert à deux choses.** Le suivi de la
+  souris est conditionné à `last_event.elapsed() >= COOLDOWN` (5 s), or
+  `last_event` est aussi remis à zéro quand le clavier **arrive**. Donc si le
+  clavier repart moins de 5 s après être arrivé, la souris ne le suit pas —
+  cas courant quand on hésite entre deux machines et qu'on appuie sur 2 puis
+  aussitôt sur 1. Deux compteurs distincts règlent le problème : `COOLDOWN`
+  pour l'anti-rebond de `KeyboardHere`, un `FOLLOW_COOLDOWN` plus court (~1 s)
+  pour le suivi. Le garde-fou anti-boucle reste `MAX_ORPHAN_SWITCHES`, qui ne
+  dépend pas du temps. Non corrigé ici pour ne pas réécrire ton code dans ton
+  dos.
 - **`KeyboardHere` reste utile** au-delà de deux machines, où « l'autre » est
   ambigu. Le local d'abord, le réseau en secours.
 
