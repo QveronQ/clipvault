@@ -82,6 +82,7 @@ pub fn run(
     // d'une machine à l'autre indéfiniment, chacune constatant à son tour
     // qu'elle a la souris sans le clavier.
     let mut orphan_switches: u8 = 0;
+    let mut kb_absent_ticks: u8 = 0;
 
     loop {
         // Le canal sert aussi de tick (1 s).
@@ -161,6 +162,13 @@ pub fn run(
         // utile au-delà de deux machines, où « l'autre » est ambigu.
         if present {
             orphan_switches = 0;
+            kb_absent_ticks = 0;
+            continue;
+        }
+        // Un ping peut échouer transitoirement (radio occupée) : exiger deux
+        // ticks absents consécutifs avant d'arracher la souris à l'utilisateur.
+        kb_absent_ticks = kb_absent_ticks.saturating_add(1);
+        if kb_absent_ticks < 2 {
             continue;
         }
         if orphan_switches >= MAX_ORPHAN_SWITCHES || last_event.elapsed() < COOLDOWN {
