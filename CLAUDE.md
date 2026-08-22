@@ -128,6 +128,22 @@ accumuler de travail local. `git pull --rebase` avant chaque push et avant de
 commencer un chantier. Jamais de force push. Objectif : faire émerger les
 conflits le plus tôt possible, quand ils sont encore petits.
 
+## Logitech Easy-Switch (IMPLÉMENTÉ côté Linux, à tester côté Mac)
+
+`clipvault-daemon/src/logi.rs` : quand le clavier Logitech arrive sur une
+machine (ping HID++ des slots du récepteur, 1 Hz), elle publie l'événement
+sync `KeyboardHere{mouse_host}` ; la machine qui tient encore la souris le
+reçoit (< 15 s, anti-rejeu) et envoie Change Host (feature 0x1814). Activation
+par la section `[logitech]` (voir `dist/config.example.toml`). Diagnostic :
+`clipvault-daemon --logi-probe`. Vérifié sur récepteur Bolt Linux
+(MX Keys S + MX Master 3S, détection par type de la feature 0x0005).
+
+Côté Mac (pour l'agent Mac) : le chemin « périphérique direct Bluetooth »
+(device index 0xFF, usage page 0xFF43) est écrit mais JAMAIS testé — à valider
+avec `--logi-probe`. Si le Mac utilise aussi un récepteur Bolt, le chemin
+récepteur (testé) s'applique tel quel. hidapi sur macOS peut demander
+l'autorisation « Input Monitoring » (Réglages > Confidentialité).
+
 ### Backlog v2.x
 - macOS : `NSPasteboard.changeCount` (éviter la relecture d'images au polling),
   type `org.nspasteboard.ConcealedType`, plist launchd.

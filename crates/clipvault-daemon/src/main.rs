@@ -1,6 +1,7 @@
 mod capture;
 mod clipboard;
 mod ipc;
+mod logi;
 mod store;
 mod sync;
 mod watcher;
@@ -33,6 +34,20 @@ fn classify(mime: &str) -> ContentKind {
 }
 
 fn main() -> Result<()> {
+    // Diagnostic : `clipvault-daemon --logi-probe` liste les périphériques
+    // Logitech visibles (slots du récepteur, noms, support Change Host).
+    if std::env::args().any(|a| a == "--logi-probe") {
+        let cfg = Config::load().logitech.unwrap_or(
+            clipvault_core::config::LogiConfig {
+                mouse_host: 1,
+                keyboard: None,
+                mouse: None,
+            },
+        );
+        print!("{}", logi::Engine::probe(cfg)?);
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -104,6 +119,19 @@ fn main() -> Result<()> {
             }
         })?;
 
+    // Suivi souris/clavier Logitech, si configuré.
+    let logi_tx = if let Some(logi_cfg) = cfg.logitech.clone() {
+        let (tx, rx) = mpsc::channel();
+        let logi_store = Arc::clone(&store);
+        let logi_device = device_id.clone();
+        std::thread::Builder::new()
+            .name("logitech".into())
+            .spawn(move || logi::run(logi_store, logi_cfg, logi_device, rx))?;
+        Some(tx)
+    } else {
+        None
+    };
+
     // Synchronisation avec le serveur, si configurée.
     let sync_connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
     if let Some(sync_cfg) = cfg.sync.clone() {
@@ -117,7 +145,9 @@ fn main() -> Result<()> {
         let recv_device = device_id.clone();
         std::thread::Builder::new()
             .name("sync-recv".into())
-            .spawn(move || sync::run_recv(recv_store, sync_cfg, recv_device, recv_connected))?;
+            .spawn(move || {
+                sync::run_recv(recv_store, sync_cfg, recv_device, recv_connected, logi_tx)
+            })?;
     }
 
     // Purge périodique des vieilles entrées.

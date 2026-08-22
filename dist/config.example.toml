@@ -20,3 +20,12 @@ ignore_password_hint = true
 # [sync]
 # server = "http://merlin.ts.qdev.ovh:7700"
 # token = "le-meme-jeton-que-le-serveur"
+
+# Suivi souris/clavier Logitech Easy-Switch (nécessite la sync active).
+# Quand le clavier arrive sur cette machine, la souris suit automatiquement.
+# mouse_host = numéro Easy-Switch (1-3) de CETTE machine sur la souris.
+# Diagnostic : `clipvault-daemon --logi-probe` liste les périphériques vus.
+# [logitech]
+# mouse_host = 1
+# keyboard = "MX Keys"   # optionnel, sinon détection par type
+# mouse = "MX Master"    # optionnel, sinon détection par type

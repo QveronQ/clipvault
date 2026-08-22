@@ -15,6 +15,13 @@ use crate::store::Store;
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const IDLE_DELAY: Duration = Duration::from_secs(2);
 
+fn now_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn bearer(cfg: &SyncConfig) -> String {
     format!("Bearer {}", cfg.token)
 }
@@ -90,10 +97,11 @@ pub fn run_recv(
     cfg: SyncConfig,
     device_id: String,
     connected: Arc<std::sync::atomic::AtomicBool>,
+    logi_tx: Option<std::sync::mpsc::Sender<crate::logi::LogiCommand>>,
 ) {
     use std::sync::atomic::Ordering;
     loop {
-        if let Err(e) = recv_session(&store, &cfg, &device_id, &connected) {
+        if let Err(e) = recv_session(&store, &cfg, &device_id, &connected, &logi_tx) {
             warn!("sync: connexion au flux perdue ({e}), retry dans 5 s");
         }
         connected.store(false, Ordering::Relaxed);
@@ -106,6 +114,7 @@ fn recv_session(
     cfg: &SyncConfig,
     device_id: &str,
     connected: &std::sync::atomic::AtomicBool,
+    logi_tx: &Option<std::sync::mpsc::Sender<crate::logi::LogiCommand>>,
 ) -> Result<()> {
     let since = store.lock().unwrap().last_seq()?;
     let ws_base = cfg
@@ -130,7 +139,7 @@ fn recv_session(
                         continue;
                     }
                 };
-                apply_event(store, cfg, event);
+                apply_event(store, cfg, event, logi_tx);
             }
             tungstenite::Message::Close(_) => bail!("fermé par le serveur"),
             _ => {} // ping/pong gérés par tungstenite
@@ -138,7 +147,12 @@ fn recv_session(
     }
 }
 
-fn apply_event(store: &Arc<Mutex<Store>>, cfg: &SyncConfig, event: SyncEvent) {
+fn apply_event(
+    store: &Arc<Mutex<Store>>,
+    cfg: &SyncConfig,
+    event: SyncEvent,
+    logi_tx: &Option<std::sync::mpsc::Sender<crate::logi::LogiCommand>>,
+) {
     let seq = event.seq;
     let result = (|| -> Result<()> {
         match event.item {
@@ -171,6 +185,21 @@ fn apply_event(store: &Arc<Mutex<Store>>, cfg: &SyncConfig, event: SyncEvent) {
             PushItem::Pinned { id, pinned } => {
                 store.lock().unwrap().set_pinned(&id, pinned)?;
                 info!("sync: épinglage propagé ({id} -> {pinned})");
+            }
+            PushItem::KeyboardHere {
+                device,
+                mouse_host,
+                ts,
+            } => {
+                let age = (now_epoch() - ts).abs();
+                if age > 15 {
+                    // Rejeu du journal (reconnexion) : trop vieux, on ignore.
+                    return Ok(());
+                }
+                if let Some(tx) = logi_tx {
+                    info!("sync: clavier arrivé sur {device}, souris -> hôte {mouse_host}");
+                    let _ = tx.send(crate::logi::LogiCommand::SwitchMouse { host: mouse_host });
+                }
             }
         }
         Ok(())
