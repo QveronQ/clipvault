@@ -48,6 +48,25 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Diagnostic : `clipvault-daemon --logi-switch N` envoie la souris vers
+    // l'hôte Easy-Switch N (1-3). Sert à vérifier le Change Host sans monter
+    // tout le mécanisme de détection du clavier.
+    if let Some(host) = std::env::args()
+        .skip_while(|a| a != "--logi-switch")
+        .nth(1)
+        .and_then(|a| a.parse::<u8>().ok())
+    {
+        let cfg = Config::load().logitech.unwrap_or(clipvault_core::config::LogiConfig {
+            mouse_host: 1,
+            keyboard: None,
+            mouse: None,
+        });
+        let mut engine = logi::Engine::open(cfg)?;
+        engine.switch_mouse(host)?;
+        println!("Change Host envoyé: souris -> hôte {host}");
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
