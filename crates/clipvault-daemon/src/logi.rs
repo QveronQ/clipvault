@@ -81,14 +81,7 @@ pub fn run(
                     LogiCommand::SwitchMouse { host } => e
                         .switch_mouse(host)
                         .map(|()| info!("logitech: souris envoyée vers l'hôte {host}")),
-                    LogiCommand::SwitchBoth { host } => {
-                        // Souris d'abord : une fois le clavier parti, tout est
-                        // encore joignable, mais autant garder l'ordre sûr.
-                        let m = e.switch_mouse(host);
-                        let k = e.switch_keyboard(host);
-                        m.and(k)
-                            .map(|()| info!("logitech: clavier + souris envoyés vers l'hôte {host}"))
-                    }
+                    LogiCommand::SwitchBoth { host } => switch_both(e, host),
                 };
                 if let Err(err) = result {
                     warn!("logitech: change host: {err}");
@@ -112,9 +105,7 @@ pub fn run(
                     .toggle_host
                     .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
                 info!("logitech: bouton souris pressé, bascule vers l'hôte {target}");
-                let m = e.switch_mouse(target);
-                let k = e.switch_keyboard(target);
-                if let Err(err) = m.and(k) {
+                if let Err(err) = switch_both(e, target) {
                     warn!("logitech: bascule bouton: {err}");
                 }
                 continue; // clavier parti aussi : inutile de le sonder ce tick
@@ -147,6 +138,19 @@ pub fn run(
         }
 
     }
+}
+
+/// Bascule clavier puis souris, avec un délai entre les deux : deux
+/// reconnexions Bluetooth simultanées sur la machine cible se gênent
+/// (constaté sur macOS : souris avec la LED sur le bon canal mais liaison
+/// jamais établie). Le clavier part en premier pour pouvoir taper au plus vite.
+fn switch_both(e: &mut Engine, host: u8) -> Result<()> {
+    let k = e.switch_keyboard(host);
+    info!("logitech: clavier envoyé vers l'hôte {host}, souris dans 2 s");
+    std::thread::sleep(Duration::from_secs(2));
+    let m = e.switch_mouse(host);
+    k.and(m)
+        .map(|()| info!("logitech: souris envoyée vers l'hôte {host}"))
 }
 
 fn ensure_engine<'a>(engine: &'a mut Option<Engine>, cfg: &LogiConfig) -> Option<&'a mut Engine> {
