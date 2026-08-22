@@ -124,6 +124,17 @@ struct ManageState {
     /// URL d'un serveur détecté en local quand aucune sync n'est configurée.
     probe_local: Arc<Mutex<Option<String>>>,
     last_fetch: Option<Instant>,
+    /// Formulaire de connexion (affiché tant qu'aucune sync n'est configurée).
+    form_url: String,
+    form_token: String,
+    show_token: bool,
+    /// L'URL a déjà été préremplie depuis `probe_local` (ne pas écraser la saisie).
+    form_prefilled: bool,
+    /// Résultat du bouton « Tester », rempli par un thread de fond.
+    test: Arc<Mutex<Option<Result<ServerStatus, String>>>>,
+    testing: bool,
+    /// Résultat du bouton « Enregistrer » : chemin écrit, ou message d'erreur.
+    saved: Option<Result<String, String>>,
 }
 
 impl Default for ManageState {
@@ -134,6 +145,13 @@ impl Default for ManageState {
             server: Arc::new(Mutex::new(None)),
             probe_local: Arc::new(Mutex::new(None)),
             last_fetch: None,
+            form_url: String::new(),
+            form_token: String::new(),
+            show_token: false,
+            form_prefilled: false,
+            test: Arc::new(Mutex::new(None)),
+            testing: false,
+            saved: None,
         }
     }
 }
@@ -757,31 +775,157 @@ impl App {
                     }
                 }
             } else {
-                let probe = self.manage.probe_local.lock().unwrap().clone();
-                match probe {
-                    Some(url) => {
-                        ui.label(
-                            RichText::new(format!("Un serveur clipvault tourne en local ({url})."))
-                                .color(theme::PIN),
-                        );
-                        ui.label(
-                            RichText::new(
-                                "Ajoute une section [sync] avec son URL et son jeton dans \
-                                 ~/.config/clipvault/config.toml puis redémarre le daemon.",
-                            )
-                            .color(theme::SUBTEXT)
-                            .font(FontId::proportional(12.5)),
-                        );
-                    }
-                    None => {
-                        ui.label(
-                            RichText::new("Aucun serveur configuré ni détecté en local.")
-                                .color(theme::OVERLAY),
-                        );
-                    }
-                }
+                self.draw_connect_form(ui);
             }
         });
+    }
+}
+
+impl App {
+    /// Formulaire de connexion, affiché tant qu'aucune section [sync] n'existe.
+    fn draw_connect_form(&mut self, ui: &mut egui::Ui) {
+        let probe = self.manage.probe_local.lock().unwrap().clone();
+        // Prérempli une seule fois : la saisie de l'utilisateur prime ensuite.
+        if let Some(url) = &probe {
+            if !self.manage.form_prefilled && self.manage.form_url.trim().is_empty() {
+                self.manage.form_url = url.clone();
+                self.manage.form_prefilled = true;
+            }
+        }
+        let hint = match &probe {
+            Some(url) => format!("Serveur détecté en local ({url})."),
+            None => "Aucun serveur configuré ni détecté en local.".to_string(),
+        };
+        ui.label(
+            RichText::new(hint)
+                .color(if probe.is_some() { theme::PIN } else { theme::OVERLAY })
+                .font(FontId::proportional(12.5)),
+        );
+        ui.add_space(6.0);
+
+        let field_width = (ui.available_width() - 128.0).max(120.0);
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [120.0, 18.0],
+                egui::Label::new(
+                    RichText::new("URL du serveur")
+                        .font(FontId::proportional(12.5))
+                        .color(theme::OVERLAY),
+                ),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.manage.form_url)
+                    .hint_text("http://omarchie2:7700")
+                    .desired_width(field_width),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [120.0, 18.0],
+                egui::Label::new(
+                    RichText::new("Jeton partagé")
+                        .font(FontId::proportional(12.5))
+                        .color(theme::OVERLAY),
+                ),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.manage.form_token)
+                    .password(!self.manage.show_token)
+                    .hint_text("le même que CLIPVAULT_TOKEN côté serveur")
+                    .desired_width(field_width),
+            );
+        });
+
+        ui.add_space(8.0);
+        let ready = !self.manage.form_url.trim().is_empty()
+            && !self.manage.form_token.trim().is_empty();
+        let (mut do_test, mut do_save) = (false, false);
+        ui.horizontal(|ui| {
+            ui.add_space(120.0);
+            do_test = ui
+                .add_enabled(ready && !self.manage.testing, egui::Button::new("Tester"))
+                .clicked();
+            do_save = ui
+                .add_enabled(ready, egui::Button::new("Enregistrer"))
+                .clicked();
+            ui.add_space(6.0);
+            ui.checkbox(&mut self.manage.show_token, "afficher le jeton");
+        });
+
+        if do_test {
+            let cfg = self.form_sync_cfg();
+            *self.manage.test.lock().unwrap() = None;
+            self.manage.testing = true;
+            let slot = Arc::clone(&self.manage.test);
+            std::thread::spawn(move || {
+                *slot.lock().unwrap() = Some(fetch_server_status(&cfg));
+            });
+        }
+        if do_save {
+            let cfg = self.form_sync_cfg();
+            self.manage.saved = Some(
+                clipvault_core::config::Config::save_sync(&cfg)
+                    .map(|p| p.display().to_string()),
+            );
+        }
+
+        ui.add_space(6.0);
+        let test = self.manage.test.lock().unwrap().clone();
+        if test.is_some() {
+            self.manage.testing = false;
+        }
+        match test {
+            Some(Ok(st)) => {
+                ui.label(
+                    RichText::new(format!(
+                        "Connexion établie — serveur {}, {} événement(s), {} machine(s) connectée(s).",
+                        st.version,
+                        st.events,
+                        st.clients.len()
+                    ))
+                    .color(theme::OK)
+                    .font(FontId::proportional(12.5)),
+                );
+            }
+            Some(Err(e)) => {
+                ui.label(RichText::new(e).color(theme::ERROR).font(FontId::proportional(12.5)));
+            }
+            None if self.manage.testing => {
+                ui.label(
+                    RichText::new("test en cours…")
+                        .color(theme::OVERLAY)
+                        .font(FontId::proportional(12.5)),
+                );
+            }
+            None => {}
+        }
+
+        match &self.manage.saved {
+            Some(Ok(path)) => {
+                ui.label(
+                    RichText::new(format!("Enregistré dans {path}"))
+                        .color(theme::OK)
+                        .font(FontId::proportional(12.5)),
+                );
+                ui.label(
+                    RichText::new("Redémarre le daemon pour activer la synchronisation.")
+                        .color(theme::SUBTEXT)
+                        .font(FontId::proportional(12.5)),
+                );
+            }
+            Some(Err(e)) => {
+                ui.label(RichText::new(e).color(theme::ERROR).font(FontId::proportional(12.5)));
+            }
+            None => {}
+        }
+    }
+
+    /// La configuration décrite par le formulaire (valeurs nettoyées).
+    fn form_sync_cfg(&self) -> SyncConfig {
+        SyncConfig {
+            server: self.manage.form_url.trim().to_string(),
+            token: self.manage.form_token.trim().to_string(),
+        }
     }
 }
 
@@ -919,7 +1063,8 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id("clipvault")
             .with_inner_size([700.0, 480.0])
@@ -928,6 +1073,18 @@ fn main() -> eframe::Result<()> {
             .with_resizable(false),
         ..Default::default()
     };
+    // macOS : `Accessory` = pas d'icône dans le Dock ni dans Cmd+Tab (le popup
+    // est éphémère), mais il faut alors demander explicitement le premier plan,
+    // sinon la fenêtre s'ouvre derrière et ne reçoit pas les touches.
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        options.event_loop_builder = Some(Box::new(|builder| {
+            builder
+                .with_activation_policy(ActivationPolicy::Accessory)
+                .with_activate_ignoring_other_apps(true);
+        }));
+    }
     eframe::run_native(
         "clipvault",
         options,
