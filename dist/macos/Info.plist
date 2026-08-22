@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Clipvault</string>
+	<key>CFBundleDisplayName</key>
+	<string>Clipvault</string>
+	<key>CFBundleIdentifier</key>
+	<string>ovh.qdev.clipvault</string>
+	<key>CFBundleExecutable</key>
+	<string>clipvault</string>
+	<key>CFBundleIconFile</key>
+	<string>clipvault</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<!-- Popup éphémère façon Spotlight : pas d'icône dans le Dock ni dans Cmd+Tab. -->
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>
