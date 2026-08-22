@@ -178,8 +178,18 @@ propre (« Surveillance de l'entrée » pour le binaire du daemon).
   redémarrer le LaunchAgent. Piste contre cette friction : signer avec une
   identité stable (certificat auto-signé dans le trousseau).
 - **Clavier : impossible même avec l'autorisation** (kIOReturnNotPrivileged,
-  protection noyau anti-keylogger ; seul root passe). Ne pas insister ; un
-  LaunchDaemon root dédié serait la seule voie, non retenue.
+  protection noyau anti-keylogger ; seul root passe — double barrière
+  TCC + IOHIDFamily). **Prior art qui valide la voie root** :
+  github.com/omar16100/logi_mx_auto_switch (même matériel, même but) tourne en
+  LaunchDaemon root et passe les deux portes, sans entitlement privé. Si on y
+  va un jour : mini-helper privilégié dédié (`clipvault-hidhelper`, socket
+  local, périmètre ping/ChangeHost/divert uniquement), pas le daemon entier
+  en root. Ses garde-fous à copier : pas de bascule pendant veille/réveil,
+  timeout = état inconnu (on ne bascule pas à l'aveugle).
+- **Idée volée au même projet — feature 0x1815 (HostsInfo)** : le périphérique
+  stocke les NOMS des machines appairées par canal. Permettrait d'auto-déduire
+  `mouse_host`/`toggle_host` en matchant avec les device_id de la sync
+  (zéro config). Marche aussi via le récepteur côté Linux. → backlog.
 - **Design retenu pour Mac → Linux** : le raccourci Mac ne bascule que la
   souris ; le trajet complet passe par le bouton canal physique du clavier +
   le flux automatique KeyboardHere qui ramène la souris (déjà fonctionnel).
