@@ -140,17 +140,14 @@ pub fn run(
     }
 }
 
-/// Bascule clavier puis souris, avec un délai entre les deux : deux
-/// reconnexions Bluetooth simultanées sur la machine cible se gênent
-/// (constaté sur macOS : souris avec la LED sur le bon canal mais liaison
-/// jamais établie). Le clavier part en premier pour pouvoir taper au plus vite.
+/// Bascule souris puis clavier, avec un court décalage entre les deux
+/// (réglage validé à l'usage : la souris d'abord, le clavier 350 ms après).
 fn switch_both(e: &mut Engine, host: u8) -> Result<()> {
-    let k = e.switch_keyboard(host);
-    info!("logitech: clavier envoyé vers l'hôte {host}, souris dans 2 s");
-    std::thread::sleep(Duration::from_secs(2));
     let m = e.switch_mouse(host);
-    k.and(m)
-        .map(|()| info!("logitech: souris envoyée vers l'hôte {host}"))
+    std::thread::sleep(Duration::from_millis(350));
+    let k = e.switch_keyboard(host);
+    m.and(k)
+        .map(|()| info!("logitech: souris + clavier envoyés vers l'hôte {host}"))
 }
 
 fn ensure_engine<'a>(engine: &'a mut Option<Engine>, cfg: &LogiConfig) -> Option<&'a mut Engine> {
