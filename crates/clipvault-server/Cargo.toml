@@ -1,0 +1,20 @@
+[package]
+name = "clipvault-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clipvault-core = { path = "../clipvault-core" }
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tungstenite = "0.30"
+ureq = { version = "3", features = ["json"] }

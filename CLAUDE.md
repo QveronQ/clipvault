@@ -76,21 +76,31 @@ a été écrit **sans pouvoir être compilé ni testé sur macOS**. À faire :
 Chaque correction doit rester compatible Linux (ne pas toucher aux branches
 Linux sans nécessité). Commits + push sur `main` (repo : `QveronQ/clipvault`).
 
-## Design de la sync (v2 — NE PAS improviser autre chose)
+## Sync (IMPLÉMENTÉE — client-serveur, offline-first)
 
-Topologie **client-serveur, offline-first**. Pas de peer-to-peer.
+- `crates/clipvault-server` : journal d'événements append-only (SQLite) +
+  store d'objets. REST (`POST /v1/push`, `PUT|GET /v1/objects/<hash>`) +
+  WebSocket de diffusion (`GET /v1/ws?token&since&device`). Protocole dans
+  `clipvault-core::sync`. Auth : token partagé (env `CLIPVAULT_TOKEN`),
+  pensé pour tourner sur le tailnet Headscale (`*.ts.qdev.ovh`).
+- Côté daemon (`sync.rs`) : outbox SQLite (offline-first, retry), thread push
+  + thread réception WS (curseur `last_seq` persisté). Dédup par ULID +
+  content_hash → pas de conflits ; épinglage/suppression = événements
+  last-write-wins. Activée par la section `[sync]` de `config.toml`
+  (voir `dist/config.example.toml`).
+- Test bout en bout : `crates/clipvault-server/tests/e2e.rs`. Env utiles :
+  `CLIPVAULT_SOCKET` (chemin du socket IPC), `CLIPVAULT_DEVICE` (force
+  l'identifiant machine) — permettent plusieurs daemons sur une même machine.
 
-- Un serveur central (`clipvault-server`, axum, à créer) sur le tailnet
-  Headscale de Quentin (`*.ts.qdev.ovh`) — hébergeable au début sur omarchie2,
-  à terme sur une machine toujours allumée ou le cloud.
-- Chaque daemon est un client : il **pousse** ses nouvelles entrées (métadonnées
-  + blob) et **reçoit** celles des autres machines (WebSocket ou long-poll).
-- Le SQLite local reste la source de vérité locale : une machine hors-ligne
-  garde son historique et rattrape à la reconnexion (les entrées sont immuables,
-  identifiées par ULID + content_hash → pas de conflits ; épinglage/suppression
-  propagés comme événements, last-write-wins).
-- Les types de `clipvault-core::ipc` servent de base au protocole ; l'auth v1 :
-  token partagé (le réseau est déjà privé/wireguard via le tailnet).
+### Backlog v2.x
+- Écran de config dans l'UI : découverte du serveur (mDNS `_clipvault._tcp`
+  annoncé par le serveur) + saisie manuelle URL/token → écrit `config.toml`.
+- macOS : `NSPasteboard.changeCount` (éviter la relecture d'images au polling),
+  type `org.nspasteboard.ConcealedType`, plist launchd.
+- Statut de sync dans l'UI (connecté/hors-ligne, taille de l'outbox — la
+  requête IPC `stats` peut s'enrichir).
+- Chiffrement E2E (le serveur ne verrait que des blobs) si serveur cloud.
+- Switch de canal Logitech (HID++ via `hidapi`).
 
 ## Contexte session Linux (ne concerne pas l'agent Mac)
 

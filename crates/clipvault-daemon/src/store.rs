@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clipvault_core::config::Config;
+use clipvault_core::sync::{PushItem, SyncEntry};
 use clipvault_core::types::{ContentKind, EntryMeta};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
@@ -38,6 +39,16 @@ CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
     INSERT INTO entries_fts(entries_fts, rowid, text_content)
     VALUES ('delete', old.rowid, coalesce(old.text_content, ''));
 END;
+
+-- File d'attente de sync sortante (offline-first) et curseur de réception.
+CREATE TABLE IF NOT EXISTS outbox (
+    seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+    payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 pub struct Store {
@@ -46,6 +57,15 @@ pub struct Store {
     device_id: String,
     objects_dir: PathBuf,
     thumbs_dir: PathBuf,
+}
+
+/// Résultat de l'écriture du contenu d'une entrée.
+#[derive(Default)]
+struct Payload {
+    text_content: Option<String>,
+    object_path: Option<String>,
+    thumb_path: Option<String>,
+    preview: String,
 }
 
 fn now() -> i64 {
@@ -89,6 +109,10 @@ impl Store {
         })
     }
 
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
     /// Ingestion d'une capture. Retourne l'id (existant si dédupliqué, sinon nouveau).
     pub fn insert(&mut self, kind: ContentKind, mime: &str, data: &[u8]) -> Result<String> {
         let hash = blake3::hash(data).to_hex().to_string();
@@ -111,43 +135,7 @@ impl Store {
         }
 
         let id = ulid::Ulid::generate().to_string();
-        let mut text_content: Option<String> = None;
-        let mut object_path: Option<String> = None;
-        let mut thumb_path: Option<String> = None;
-        let preview;
-
-        match kind {
-            ContentKind::Text => {
-                let text = String::from_utf8_lossy(data).into_owned();
-                preview = text_preview(&text);
-                text_content = Some(text);
-            }
-            ContentKind::Image => {
-                let obj = self.objects_dir.join(&hash);
-                std::fs::write(&obj, data)?;
-                object_path = Some(obj.to_string_lossy().into_owned());
-                match image::load_from_memory(data) {
-                    Ok(img) => {
-                        let (w, h) = (img.width(), img.height());
-                        let thumb = img.thumbnail(256, 256);
-                        let tp = self.thumbs_dir.join(format!("{hash}.png"));
-                        if thumb.to_rgba8().save(&tp).is_ok() {
-                            thumb_path = Some(tp.to_string_lossy().into_owned());
-                        }
-                        preview = format!("Image {w}×{h}");
-                    }
-                    Err(_) => {
-                        preview = format!("Image ({mime})");
-                    }
-                }
-            }
-            ContentKind::Binary => {
-                let obj = self.objects_dir.join(&hash);
-                std::fs::write(&obj, data)?;
-                object_path = Some(obj.to_string_lossy().into_owned());
-                preview = format!("{mime} — {} octets", data.len());
-            }
-        }
+        let payload = self.write_payload(kind, mime, &hash, data)?;
 
         self.conn.execute(
             "INSERT INTO entries (id, device_id, content_hash, kind, mime, size,
@@ -161,14 +149,213 @@ impl Store {
                 kind.as_str(),
                 mime,
                 data.len() as i64,
-                text_content,
-                object_path,
-                thumb_path,
-                preview,
+                payload.text_content,
+                payload.object_path,
+                payload.thumb_path,
+                payload.preview,
                 ts,
             ],
         )?;
+
+        // Sync : mettre la nouvelle entrée dans la file sortante.
+        if self.cfg.sync.is_some() {
+            let entry = SyncEntry {
+                meta: EntryMeta {
+                    id: id.clone(),
+                    device_id: self.device_id.clone(),
+                    kind,
+                    mime: mime.to_string(),
+                    size: data.len() as u64,
+                    preview: payload.preview,
+                    thumb_path: None, // chemin local, chaque machine régénère
+                    created_at: ts,
+                    last_used_at: ts,
+                    pinned: false,
+                },
+                text: payload.text_content,
+                object_hash: (kind != ContentKind::Text).then(|| hash.clone()),
+            };
+            self.enqueue(&PushItem::Entry(entry))?;
+        }
         Ok(id)
+    }
+
+    /// Écrit le contenu (texte inline / blob + thumbnail) et calcule l'aperçu.
+    fn write_payload(
+        &self,
+        kind: ContentKind,
+        mime: &str,
+        hash: &str,
+        data: &[u8],
+    ) -> Result<Payload> {
+        let mut payload = Payload::default();
+        match kind {
+            ContentKind::Text => {
+                let text = String::from_utf8_lossy(data).into_owned();
+                payload.preview = text_preview(&text);
+                payload.text_content = Some(text);
+            }
+            ContentKind::Image => {
+                let obj = self.objects_dir.join(hash);
+                std::fs::write(&obj, data)?;
+                payload.object_path = Some(obj.to_string_lossy().into_owned());
+                match image::load_from_memory(data) {
+                    Ok(img) => {
+                        let (w, h) = (img.width(), img.height());
+                        let thumb = img.thumbnail(256, 256);
+                        let tp = self.thumbs_dir.join(format!("{hash}.png"));
+                        if thumb.to_rgba8().save(&tp).is_ok() {
+                            payload.thumb_path = Some(tp.to_string_lossy().into_owned());
+                        }
+                        payload.preview = format!("Image {w}×{h}");
+                    }
+                    Err(_) => {
+                        payload.preview = format!("Image ({mime})");
+                    }
+                }
+            }
+            ContentKind::Binary => {
+                let obj = self.objects_dir.join(hash);
+                std::fs::write(&obj, data)?;
+                payload.object_path = Some(obj.to_string_lossy().into_owned());
+                payload.preview = format!("{mime} — {} octets", data.len());
+            }
+        }
+        Ok(payload)
+    }
+
+    /// Applique une entrée reçue du serveur (id, device et horodatages préservés).
+    /// `data` : blob téléchargé pour les entrées non-texte.
+    pub fn apply_remote_entry(&mut self, entry: &SyncEntry, data: Option<&[u8]>) -> Result<()> {
+        let m = &entry.meta;
+        let exists: Option<String> = self
+            .conn
+            .query_row("SELECT id FROM entries WHERE id = ?1", [&m.id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let bytes;
+        let (hash, data) = match (&entry.text, data) {
+            (Some(t), _) => {
+                bytes = t.clone().into_bytes();
+                (blake3::hash(&bytes).to_hex().to_string(), bytes.as_slice())
+            }
+            (None, Some(d)) => match &entry.object_hash {
+                Some(h) => (h.clone(), d),
+                None => return Ok(()), // entrée binaire sans hash : illisible
+            },
+            (None, None) => return Ok(()), // blob indisponible : on ignore
+        };
+        if exists.is_some()
+            || self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM entries WHERE content_hash = ?1",
+                    [&hash],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some()
+        {
+            return Ok(()); // déjà connue (id ou même contenu)
+        }
+
+        let payload = self.write_payload(m.kind, &m.mime, &hash, data)?;
+        self.conn.execute(
+            "INSERT INTO entries (id, device_id, content_hash, kind, mime, size,
+                                  text_content, object_path, thumb_path, preview,
+                                  created_at, last_used_at, pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                m.id,
+                m.device_id,
+                hash,
+                m.kind.as_str(),
+                m.mime,
+                data.len() as i64,
+                payload.text_content,
+                payload.object_path,
+                payload.thumb_path,
+                payload.preview,
+                m.created_at,
+                m.last_used_at,
+                m.pinned as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    // ---- File d'attente de sync sortante ----
+
+    /// Ajoute un événement à pousser vers le serveur (no-op sans sync configurée).
+    pub fn enqueue(&self, item: &PushItem) -> Result<()> {
+        if self.cfg.sync.is_none() {
+            return Ok(());
+        }
+        self.conn.execute(
+            "INSERT INTO outbox (payload) VALUES (?1)",
+            [serde_json::to_string(item)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn outbox_peek(&self, limit: u32) -> Result<Vec<(i64, PushItem)>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT seq, payload FROM outbox ORDER BY seq LIMIT ?1")?;
+        let rows = stmt.query_map([limit], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (seq, payload) = row?;
+            match serde_json::from_str(&payload) {
+                Ok(item) => out.push((seq, item)),
+                Err(_) => {
+                    // Entrée illisible : on la retire pour ne pas bloquer la file.
+                    self.conn.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn outbox_remove(&self, seq: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+        Ok(())
+    }
+
+    /// Dernier seq serveur appliqué (curseur de réception).
+    pub fn last_seq(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM sync_state WHERE key = 'last_seq'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0))
+    }
+
+    pub fn set_last_seq(&self, seq: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sync_state (key, value) VALUES ('last_seq', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [seq.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Contenu brut d'un blob local (pour le pousser au serveur).
+    pub fn object_data(&self, hash: &str) -> Result<Option<Vec<u8>>> {
+        let path = self.objects_dir.join(hash);
+        match std::fs::read(&path) {
+            Ok(d) => Ok(Some(d)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn row_to_meta(row: &Row<'_>) -> rusqlite::Result<EntryMeta> {

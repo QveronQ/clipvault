@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/clipvault-core",
     "crates/clipvault-daemon",
+    "crates/clipvault-server",
     "crates/clipvault-ui",
 ]
 

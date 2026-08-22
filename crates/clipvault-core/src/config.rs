@@ -15,6 +15,16 @@ pub struct Config {
     pub ignore_password_hint: bool,
     /// Répertoire de données (défaut : ~/.local/share/clipvault).
     pub data_dir: Option<PathBuf>,
+    /// Synchronisation avec un serveur clipvault (absent = pas de sync).
+    pub sync: Option<SyncConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncConfig {
+    /// URL de base du serveur, ex. "http://merlin.ts.qdev.ovh:7700".
+    pub server: String,
+    /// Jeton partagé (doit correspondre à celui du serveur).
+    pub token: String,
 }
 
 impl Default for Config {
@@ -25,6 +35,7 @@ impl Default for Config {
             max_entries: 10_000,
             ignore_password_hint: true,
             data_dir: None,
+            sync: None,
         }
     }
 }

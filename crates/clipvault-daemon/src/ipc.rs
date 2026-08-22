@@ -106,11 +106,15 @@ fn handle_request(req: Request, store: &Mutex<Store>) -> Response {
                 }
             }
             Request::Delete { id } => {
-                store.lock().unwrap().delete(&id)?;
+                let s = store.lock().unwrap();
+                s.delete(&id)?;
+                s.enqueue(&clipvault_core::sync::PushItem::Deleted { id })?;
                 Ok(Response::Ok)
             }
             Request::SetPinned { id, pinned } => {
-                store.lock().unwrap().set_pinned(&id, pinned)?;
+                let s = store.lock().unwrap();
+                s.set_pinned(&id, pinned)?;
+                s.enqueue(&clipvault_core::sync::PushItem::Pinned { id, pinned })?;
                 Ok(Response::Ok)
             }
             Request::GetText { id } => {

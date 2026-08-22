@@ -15,3 +15,8 @@ ignore_password_hint = true
 
 # Répertoire de données (défaut : ~/.local/share/clipvault)
 # data_dir = "/chemin/perso"
+
+# Synchronisation avec un serveur clipvault (section absente = pas de sync).
+# [sync]
+# server = "http://merlin.ts.qdev.ovh:7700"
+# token = "le-meme-jeton-que-le-serveur"

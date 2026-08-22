@@ -2,6 +2,7 @@ mod capture;
 mod clipboard;
 mod ipc;
 mod store;
+mod sync;
 mod watcher;
 
 use std::sync::mpsc;
@@ -39,9 +40,12 @@ fn main() -> Result<()> {
         .init();
 
     let cfg = Config::load();
-    let device_id = hostname::get()
-        .map(|h| h.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "unknown".into());
+    // CLIPVAULT_DEVICE permet de forcer l'identifiant machine (tests, alias).
+    let device_id = std::env::var("CLIPVAULT_DEVICE").unwrap_or_else(|_| {
+        hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "unknown".into())
+    });
     info!(
         "clipvault-daemon démarre (device: {device_id}, data: {})",
         cfg.data_dir().display()
@@ -95,6 +99,23 @@ fn main() -> Result<()> {
                 }
             }
         })?;
+
+    // Synchronisation avec le serveur, si configurée.
+    if let Some(sync_cfg) = cfg.sync.clone() {
+        let device = {
+            let s = store.lock().unwrap();
+            s.device_id().to_string()
+        };
+        let push_store = Arc::clone(&store);
+        let (push_cfg, push_device) = (sync_cfg.clone(), device.clone());
+        std::thread::Builder::new()
+            .name("sync-push".into())
+            .spawn(move || sync::run_push(push_store, push_cfg, push_device))?;
+        let recv_store = Arc::clone(&store);
+        std::thread::Builder::new()
+            .name("sync-recv".into())
+            .spawn(move || sync::run_recv(recv_store, sync_cfg, device))?;
+    }
 
     // Purge périodique des vieilles entrées.
     let purge_store = Arc::clone(&store);

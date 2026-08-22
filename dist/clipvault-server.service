@@ -1,0 +1,16 @@
+[Unit]
+Description=Clipvault — serveur de synchronisation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/clipvault-server
+# Jeton partagé avec les daemons — à définir dans un fichier d'env non commité :
+#   echo 'CLIPVAULT_TOKEN=<jeton>' > ~/.config/clipvault/server.env && chmod 600 ~/.config/clipvault/server.env
+EnvironmentFile=%h/.config/clipvault/server.env
+Environment=CLIPVAULT_LISTEN=0.0.0.0:7700
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

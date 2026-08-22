@@ -1,8 +1,25 @@
 # clipvault
 
-Historique de copier/coller cross-platform (texte, image, binaire) avec indexation
-et recherche plein texte. v1 : Linux/Wayland (Niri). v2 prévue : sync inter-machines
-(serveur axum), macOS, Windows.
+Historique de copier/coller cross-platform (texte, image, binaire) avec indexation,
+recherche plein texte et **synchronisation entre machines** (client-serveur,
+offline-first). Linux/Wayland (Niri) natif ; macOS/Windows via polling arboard.
+
+## Synchronisation
+
+Un serveur central (`clipvault-server`) fait le rendez-vous ; chaque daemon pousse
+ses captures et reçoit celles des autres machines en temps réel (WebSocket).
+Hors-ligne, tout continue en local (outbox) et rattrape à la reconnexion.
+
+```sh
+# Sur la machine serveur
+install -Dm755 target/release/clipvault-server ~/.local/bin/clipvault-server
+echo 'CLIPVAULT_TOKEN=<jeton>' > ~/.config/clipvault/server.env && chmod 600 ~/.config/clipvault/server.env
+install -Dm644 dist/clipvault-server.service ~/.config/systemd/user/clipvault-server.service
+systemctl --user daemon-reload && systemctl --user enable --now clipvault-server
+
+# Sur chaque machine cliente : section [sync] dans ~/.config/clipvault/config.toml
+# (voir dist/config.example.toml), puis redémarrer le daemon.
+```
 
 ## Architecture
 
