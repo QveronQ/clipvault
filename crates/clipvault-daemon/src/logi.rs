@@ -128,10 +128,23 @@ fn ensure_engine<'a>(engine: &'a mut Option<Engine>, cfg: &LogiConfig) -> Option
 
 /// Un périphérique localisé : derrière un récepteur (slot 1-6) ou en direct
 /// (Bluetooth, device index 0xFF).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 enum Target {
     Receiver { slot: u8 },
-    Direct { path: std::ffi::CString },
+    /// Appairage direct (Bluetooth). Le chemin change à chaque reconnexion
+    /// (sur macOS c'est un registry ID), d'où le `pid` qui, lui, est stable.
+    Direct { path: std::ffi::CString, pid: u16 },
+}
+
+impl std::fmt::Debug for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // Le chemin d'un périphérique direct change à chaque reconnexion :
+            // l'afficher n'aiderait personne, le product_id si.
+            Target::Receiver { slot } => write!(f, "récepteur slot {slot}"),
+            Target::Direct { pid, .. } => write!(f, "direct pid {pid:#06x}"),
+        }
+    }
 }
 
 pub struct Engine {
@@ -212,7 +225,7 @@ impl Engine {
         // clavier, 2 = souris). Sans cette déduction, tout HID++ trouvé
         // passerait pour un clavier et la souris et le clavier se retrouvent
         // intervertis selon l'ordre d'énumération.
-        let direct: Vec<(std::ffi::CString, String, u8)> = self
+        let direct: Vec<(std::ffi::CString, String, u8, u16)> = self
             .api
             .device_list()
             .filter(|d| {
@@ -225,10 +238,11 @@ impl Engine {
                     d.path().to_owned(),
                     d.product_string().unwrap_or_default().to_string(),
                     self.desktop_device_type(d.product_id()),
+                    d.product_id(),
                 )
             })
             .collect();
-        for (path, name, dtype) in direct {
+        for (path, name, dtype, pid) in direct {
             if dtype == DEVICE_TYPE_UNKNOWN && self.cfg.keyboard.is_none() && self.cfg.mouse.is_none()
             {
                 // Type indéterminable (plateforme qui ne renseigne pas les
@@ -238,9 +252,12 @@ impl Engine {
                 continue;
             }
             if keyboard.is_none() && self.matches_keyboard(&name, dtype) {
-                keyboard = Some(Target::Direct { path: path.clone() });
+                keyboard = Some(Target::Direct {
+                    path: path.clone(),
+                    pid,
+                });
             } else if mouse.is_none() && self.matches_mouse(&name, dtype) {
-                mouse = Some(Target::Direct { path });
+                mouse = Some(Target::Direct { path, pid });
             }
         }
 
@@ -299,20 +316,39 @@ impl Engine {
     /// Le clavier répond-il ici en ce moment ?
     pub fn keyboard_present(&mut self) -> Result<bool> {
         self.scan()?;
-        match &self.keyboard {
+        match self.keyboard.clone() {
             Some(Target::Receiver { slot }) => {
                 let recv = self.receiver.as_ref().ok_or_else(|| anyhow!("récepteur fermé"))?;
-                hidpp_ping(recv, *slot)
+                hidpp_ping(recv, slot)
             }
-            Some(Target::Direct { path }) => {
-                // En direct (BT), la présence = le device HID répond au ping.
-                match self.api.open_path(path) {
-                    Ok(dev) => hidpp_ping(&dev, 0xff),
-                    Err(_) => Ok(false),
-                }
+            Some(Target::Direct { pid, .. }) => {
+                // En Bluetooth, un périphérique ne figure dans l'énumération HID
+                // que s'il est connecté à cette machine : la présence se lit
+                // sans rien ouvrir. C'est le seul moyen pour un clavier, macOS
+                // refusant d'ouvrir un IOHIDDevice de ce type
+                // (kIOReturnNotPrivileged), y compris avec « Saisie de contenu »
+                // accordée — donc pas de ping possible.
+                self.api.refresh_devices()?;
+                Ok(self
+                    .api
+                    .device_list()
+                    .any(|d| d.vendor_id() == VID_LOGITECH && d.product_id() == pid))
             }
             None => Ok(false),
         }
+    }
+
+    /// Chemin HID++ courant d'un périphérique direct : il change à chaque
+    /// reconnexion Bluetooth, celui mémorisé par `scan()` peut être périmé.
+    fn resolve_direct(&self, pid: u16) -> Option<std::ffi::CString> {
+        self.api
+            .device_list()
+            .find(|d| {
+                d.vendor_id() == VID_LOGITECH
+                    && d.product_id() == pid
+                    && HIDPP_USAGE_PAGES.contains(&d.usage_page())
+            })
+            .map(|d| d.path().to_owned())
     }
 
     /// Envoie la souris vers l'hôte Easy-Switch `host` (1-3).
@@ -332,8 +368,9 @@ impl Engine {
                 let _ = hidpp_call(recv, *slot, fi, 1, &[host0]);
                 Ok(())
             }
-            Some(Target::Direct { path }) => {
-                let dev = self.api.open_path(path)?;
+            Some(Target::Direct { path, pid }) => {
+                let path = self.resolve_direct(*pid).unwrap_or_else(|| path.clone());
+                let dev = self.api.open_path(&path)?;
                 let fi = hidpp_feature_index(&dev, 0xff, 0x1814)?
                     .ok_or_else(|| anyhow!("la souris n'a pas la feature Change Host"))?;
                 let _ = hidpp_call(&dev, 0xff, fi, 1, &[host0]);
@@ -377,15 +414,24 @@ impl Engine {
         // Détail des périphériques appairés en direct (Bluetooth, index 0xFF) :
         // sans récepteur, la boucle ci-dessus n'affiche rien d'exploitable.
         for (label, target) in [("Clavier", &engine.keyboard), ("Souris", &engine.mouse)] {
-            let Some(Target::Direct { path }) = target else {
+            let Some(Target::Direct { path, .. }) = target else {
                 continue;
             };
             let dev = match engine.api.open_path(path) {
                 Ok(d) => d,
-                Err(e) => {
-                    // Sur macOS, un refus ici = autorisation « Saisie de contenu »
-                    // manquante pour le binaire (Réglages > Confidentialité).
-                    out.push_str(&format!("  {label} (direct): ouverture impossible: {e}\n"));
+                Err(_) => {
+                    // macOS refuse d'ouvrir un IOHIDDevice de type clavier, quelle
+                    // que soit l'interface et même avec « Saisie de contenu ».
+                    // La présence reste lisible dans l'énumération.
+                    let listed = matches!(target, Some(Target::Direct { pid, .. })
+                        if engine.api.device_list().any(|d| {
+                            d.vendor_id() == VID_LOGITECH && d.product_id() == *pid
+                        }));
+                    out.push_str(&format!(
+                        "  {label} (direct): {}, non ouvrable (protégé par macOS) \
+                         — présence détectée par énumération\n",
+                        if listed { "connecté" } else { "absent" }
+                    ));
                     continue;
                 }
             };
