@@ -65,6 +65,12 @@ pub fn run(
         "logitech: actif (mouse_host de cette machine: {})",
         cfg.mouse_host
     );
+    if cfg!(target_os = "macos") && cfg.button_cid.is_some_and(|c| c != 0) {
+        warn!(
+            "logitech: bouton de bascule ignoré sur macOS — un handle permanent \
+             sur la souris la rendrait inutilisable (accès exclusif hidapi)"
+        );
+    }
     let mut engine: Option<Engine> = None;
     let mut kb_present: Option<bool> = None;
     let mut last_event = Instant::now() - COOLDOWN;
@@ -453,6 +459,16 @@ impl Engine {
 
     /// CID du bouton de bascule (0 = désactivé).
     fn button_cid(&self) -> Option<u16> {
+        // Sur macOS, hidapi ouvre un périphérique en accès EXCLUSIF : garder un
+        // handle sur la souris pour lire les notifications la confisque au
+        // système, qui ne la voit plus bouger — elle affiche bien son canal mais
+        // le pointeur est mort. Vérifié sur MX Master 3S en Bluetooth direct :
+        // toute autre ouverture échoue alors avec kIOReturnExclusiveAccess
+        // (0xE00002C5), et la souris redevient normale dès que le daemon rend
+        // le handle. Le divert est donc inutilisable ici, quel que soit le CID.
+        if cfg!(target_os = "macos") {
+            return None;
+        }
         match self.cfg.button_cid {
             Some(0) => None,
             Some(cid) => Some(cid),
@@ -628,18 +644,23 @@ impl Engine {
             };
             let dev = match engine.api.open_path(path) {
                 Ok(d) => d,
-                Err(_) => {
-                    // macOS refuse d'ouvrir un IOHIDDevice de type clavier, quelle
-                    // que soit l'interface et même avec « Saisie de contenu ».
-                    // La présence reste lisible dans l'énumération.
+                Err(e) => {
+                    // Deux causes bien distinctes, à ne pas confondre au
+                    // diagnostic : un clavier est interdit d'ouverture par macOS
+                    // (privilege violation), tandis qu'un « exclusive access »
+                    // signale qu'un autre process tient déjà l'appareil — y
+                    // compris un second clipvault-daemon.
                     let listed = matches!(target, Some(Target::Direct { pid, .. })
                         if engine.api.device_list().any(|d| {
                             d.vendor_id() == VID_LOGITECH && d.product_id() == *pid
                         }));
                     out.push_str(&format!(
-                        "  {label} (direct): {}, non ouvrable (protégé par macOS) \
-                         — présence détectée par énumération\n",
-                        if listed { "connecté" } else { "absent" }
+                        "  {label} (direct): {}, non ouvrable — {e}\n",
+                        if listed {
+                            "connecté (présence lue par énumération)"
+                        } else {
+                            "absent"
+                        }
                     ));
                     continue;
                 }

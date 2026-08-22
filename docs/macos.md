@@ -14,8 +14,9 @@ explicite du contraire.
 | Recopie (`Activate`) texte / image | ✅ |
 | Sync bidirectionnelle avec omarchie2 | ✅ dans les deux sens |
 | Écran de connexion au serveur (UI) | ✅ |
-| Easy-Switch Logitech en Bluetooth direct | ✅ après 3 correctifs |
+| Easy-Switch Logitech en Bluetooth direct | ✅ après 4 correctifs |
 | Bundle `.app` + LaunchAgent | ✅ |
+| Bouton pouce de la souris (divert) | ❌ impossible sur macOS, désactivé — voir plus bas |
 
 Le backend macOS (`watcher.rs::polled`, `clipboard.rs` branche arboard) a
 compilé **du premier coup**, sans retouche. Les vrais problèmes étaient
@@ -134,6 +135,35 @@ Souris: Some(direct pid 0xb034)
   Clavier (direct): connecté, non ouvrable (protégé par macOS) — présence détectée par énumération
   Souris (direct): ping ok, change-host oui (index 10), hôte 2/3
 ```
+
+### 4. Le bouton pouce confisque la souris (divert 0x1b04)
+
+**À lire avant de retoucher au divert.** Sur macOS, hidapi ouvre un
+périphérique en accès **exclusif**. Le mécanisme du bouton de bascule garde un
+handle permanent sur la souris pour lire les `divertedButtonsEvent` : la souris
+est alors confisquée au système, qui ne la voit plus bouger. Symptôme observé
+côté utilisateur : *« elle affiche bien le canal 2 mais ne fonctionne pas »* —
+le canal est correct, le pointeur est mort.
+
+Signature au diagnostic, à ne pas confondre avec le cas du clavier :
+
+```
+souris  : 0xE00002C5  exclusive access and device already open
+clavier : 0xE00002C1  privilege violation
+```
+
+Le `0xE00002C5` sur la souris **désigne toujours un autre process qui la tient**
+— très souvent un second `clipvault-daemon` resté en arrière-plan. La souris
+redevient normale dès que le handle est rendu (vérifié : `pkill` du daemon,
+puis ouverture immédiatement possible).
+
+Conséquence : `button_cid()` renvoie `None` sur macOS quel que soit le CID
+configuré, et le daemon avertit au démarrage si la config en demandait un. Le
+divert reste pleinement disponible sous Linux, où il est vérifié.
+
+Si quelqu'un veut ressusciter la fonctionnalité côté Mac, il faudra une autre
+voie que le handle hidapi persistant (IOHIDManager en mode non-exclusif, ou un
+tap sur les événements) — non exploré.
 
 ## Point d'attention sur le protocole de sync
 
