@@ -42,6 +42,10 @@ const SWID: u8 = 0x0d;
 const READ_TIMEOUT_MS: i32 = 300;
 /// Anti-rebond : pas deux événements KeyboardHere en moins de 5 s.
 const COOLDOWN: Duration = Duration::from_secs(5);
+/// Feature « touches reprogrammables » (divert de boutons).
+const FEAT_REPROG_KEYS: u16 = 0x1b04;
+/// Bouton pouce des MX Master (CID par défaut du déclencheur de bascule).
+const DEFAULT_BUTTON_CID: u16 = 0x00c3;
 
 fn now() -> i64 {
     SystemTime::now()
@@ -122,6 +126,23 @@ pub fn run(
                 warn!("logitech: enqueue: {err}");
             }
         }
+
+        // Bouton de bascule détourné sur la souris.
+        match e.poll_button() {
+            Ok(true) => {
+                let target = cfg
+                    .toggle_host
+                    .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
+                info!("logitech: bouton souris pressé, bascule vers l'hôte {target}");
+                let m = e.switch_mouse(target);
+                let k = e.switch_keyboard(target);
+                if let Err(err) = m.and(k) {
+                    warn!("logitech: bascule bouton: {err}");
+                }
+            }
+            Ok(false) => {}
+            Err(err) => debug!("logitech: bouton: {err}"),
+        }
     }
 }
 
@@ -159,6 +180,14 @@ impl std::fmt::Debug for Target {
     }
 }
 
+/// État du bouton de bascule détourné sur la souris.
+struct ButtonCtx {
+    dev_idx: u8,
+    feat_idx: u8,
+    cid: u16,
+    pressed: bool,
+}
+
 pub struct Engine {
     cfg: LogiConfig,
     api: HidApi,
@@ -167,6 +196,11 @@ pub struct Engine {
     keyboard: Option<Target>,
     mouse: Option<Target>,
     last_scan: Instant,
+    /// Handle persistant de la souris en appairage direct (lecture des
+    /// notifications de bouton détourné).
+    mouse_handle: Option<HidDevice>,
+    button: Option<ButtonCtx>,
+    mouse_present: Option<bool>,
 }
 
 impl Engine {
@@ -179,6 +213,9 @@ impl Engine {
             keyboard: None,
             mouse: None,
             last_scan: Instant::now() - Duration::from_secs(3600),
+            mouse_handle: None,
+            button: None,
+            mouse_present: None,
         };
         engine.scan()?;
         Ok(engine)
@@ -404,6 +441,135 @@ impl Engine {
         }
     }
 
+    /// CID du bouton de bascule (0 = désactivé).
+    fn button_cid(&self) -> Option<u16> {
+        match self.cfg.button_cid {
+            Some(0) => None,
+            Some(cid) => Some(cid),
+            None => Some(DEFAULT_BUTTON_CID),
+        }
+    }
+
+    /// La souris est-elle connectée ici en ce moment ?
+    fn mouse_here(&mut self) -> Result<bool> {
+        match self.mouse.clone() {
+            Some(Target::Receiver { slot }) => {
+                let recv = self
+                    .receiver
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("récepteur fermé"))?;
+                hidpp_ping(recv, slot)
+            }
+            Some(Target::Direct { pid, .. }) => Ok(self
+                .api
+                .device_list()
+                .any(|d| d.vendor_id() == VID_LOGITECH && d.product_id() == pid)),
+            None => Ok(false),
+        }
+    }
+
+    /// Détourne le bouton `cid` de la souris (feature 0x1b04, setCidReporting).
+    /// À refaire à chaque reconnexion : le divert ne survit pas au changement
+    /// d'hôte ni à la mise en veille profonde.
+    fn setup_button(&mut self, cid: u16) -> Result<()> {
+        let (hi, lo) = ((cid >> 8) as u8, (cid & 0xff) as u8);
+        match self.mouse.clone() {
+            Some(Target::Receiver { slot }) => {
+                let recv = self
+                    .receiver
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("récepteur fermé"))?;
+                let fi = hidpp_feature_index(recv, slot, FEAT_REPROG_KEYS)?
+                    .ok_or_else(|| anyhow!("souris sans feature 0x1b04"))?;
+                // flags 0x03 = divert + dvalid
+                hidpp_call(recv, slot, fi, 3, &[hi, lo, 0x03])?;
+                self.button = Some(ButtonCtx {
+                    dev_idx: slot,
+                    feat_idx: fi,
+                    cid,
+                    pressed: false,
+                });
+            }
+            Some(Target::Direct { path, pid }) => {
+                let path = self.resolve_direct(pid).unwrap_or(path);
+                let dev = self.api.open_path(&path)?;
+                let fi = hidpp_feature_index(&dev, 0xff, FEAT_REPROG_KEYS)?
+                    .ok_or_else(|| anyhow!("souris sans feature 0x1b04"))?;
+                hidpp_call(&dev, 0xff, fi, 3, &[hi, lo, 0x03])?;
+                self.mouse_handle = Some(dev);
+                self.button = Some(ButtonCtx {
+                    dev_idx: 0xff,
+                    feat_idx: fi,
+                    cid,
+                    pressed: false,
+                });
+            }
+            None => bail!("souris introuvable ici"),
+        }
+        info!("logitech: bouton 0x{cid:04x} de la souris détourné (bascule)");
+        Ok(())
+    }
+
+    /// À appeler à chaque tick : gère le divert (re-pose après reconnexion) et
+    /// renvoie true si le bouton de bascule vient d'être pressé.
+    pub fn poll_button(&mut self) -> Result<bool> {
+        let Some(cid) = self.button_cid() else {
+            return Ok(false);
+        };
+        self.scan()?;
+        let present = self.mouse_here()?;
+        let arrived = present && self.mouse_present != Some(true);
+        self.mouse_present = Some(present);
+        if !present {
+            // La souris est partie : le divert sera à refaire à son retour.
+            self.button = None;
+            self.mouse_handle = None;
+            return Ok(false);
+        }
+        if arrived || self.button.is_none() {
+            self.setup_button(cid)?;
+        }
+        self.drain_button_events()
+    }
+
+    /// Dépile les notifications en attente ; true si front montant sur le CID.
+    fn drain_button_events(&mut self) -> Result<bool> {
+        let Some(ctx) = &self.button else {
+            return Ok(false);
+        };
+        let (dev_idx, feat_idx, cid) = (ctx.dev_idx, ctx.feat_idx, ctx.cid);
+        let mut pressed = ctx.pressed;
+        let mut fired = false;
+        {
+            let dev: &HidDevice = match (&self.mouse, &self.receiver, &self.mouse_handle) {
+                (Some(Target::Receiver { .. }), Some(r), _) => r,
+                (Some(Target::Direct { .. }), _, Some(h)) => h,
+                _ => return Ok(false),
+            };
+            loop {
+                let mut buf = [0u8; 32];
+                let n = dev.read_timeout(&mut buf, 0)?;
+                if n == 0 {
+                    break;
+                }
+                // divertedButtonsEvent (event 0) : liste des CID pressés.
+                if buf[0] == 0x11 && buf[1] == dev_idx && buf[2] == feat_idx && buf[3] == 0x00 {
+                    let now_pressed = (0..4).any(|i| {
+                        u16::from_be_bytes([buf[4 + 2 * i], buf[5 + 2 * i]]) == cid
+                    });
+                    if now_pressed && !pressed {
+                        fired = true;
+                    }
+                    pressed = now_pressed;
+                }
+            }
+        }
+        if let Some(ctx) = &mut self.button {
+            ctx.pressed = pressed;
+        }
+        Ok(fired)
+    }
+
     /// Sonde de diagnostic : liste les slots du récepteur et les devices directs.
     pub fn probe(cfg: LogiConfig) -> Result<String> {
         let mut out = String::new();
@@ -481,6 +647,36 @@ impl Engine {
                 Some((nb, cur)) => out.push_str(&format!(", hôte {cur}/{nb}\n")),
                 None => out.push('\n'),
             }
+        }
+
+        // Boutons détournables de la souris (candidats pour [logitech] button_cid).
+        let mouse_cids = (|| -> Option<String> {
+            let list = |dev: &HidDevice, dev_idx: u8| -> Option<String> {
+                let fi = hidpp_feature_index(dev, dev_idx, FEAT_REPROG_KEYS)
+                    .ok()
+                    .flatten()?;
+                let count = hidpp_call(dev, dev_idx, fi, 0, &[]).ok()?[0];
+                let mut line = String::new();
+                for i in 0..count {
+                    if let Ok(r) = hidpp_call(dev, dev_idx, fi, 1, &[i]) {
+                        line.push_str(&format!("0x{:04x} ", u16::from_be_bytes([r[0], r[1]])));
+                    }
+                }
+                Some(line)
+            };
+            match &engine.mouse {
+                Some(Target::Receiver { slot }) => list(engine.receiver.as_ref()?, *slot),
+                Some(Target::Direct { path, pid }) => {
+                    let path = engine.resolve_direct(*pid).unwrap_or_else(|| path.clone());
+                    list(&engine.api.open_path(&path).ok()?, 0xff)
+                }
+                None => None,
+            }
+        })();
+        if let Some(cids) = mouse_cids {
+            out.push_str(&format!(
+                "Boutons souris (CID 0x1b04): {cids}— bouton pouce MX Master = 0x00c3\n"
+            ));
         }
         Ok(out)
     }

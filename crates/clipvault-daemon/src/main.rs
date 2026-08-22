@@ -73,6 +73,8 @@ fn main() -> Result<()> {
                 mouse_host: 1,
                 keyboard: None,
                 mouse: None,
+                button_cid: None,
+                toggle_host: None,
             },
         );
         print!("{}", logi::Engine::probe(cfg)?);
@@ -91,6 +93,8 @@ fn main() -> Result<()> {
             mouse_host: 1,
             keyboard: None,
             mouse: None,
+            button_cid: None,
+            toggle_host: None,
         });
         let mut engine = logi::Engine::open(cfg)?;
         engine.switch_mouse(host)?;

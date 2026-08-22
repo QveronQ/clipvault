@@ -146,6 +146,19 @@ avec `--logi-probe`. Si le Mac utilise aussi un récepteur Bolt, le chemin
 récepteur (testé) s'applique tel quel. hidapi sur macOS peut demander
 l'autorisation « Input Monitoring » (Réglages > Confidentialité).
 
+### Bouton de bascule sur la souris (nouveau — à valider côté Mac)
+
+Le bouton pouce de la MX Master (CID 0xC3) est détourné via la feature 0x1b04
+(`setCidReporting`, flags divert) ; le daemon lit les notifications
+`divertedButtonsEvent` et déclenche une bascule LOCALE clavier+souris vers
+`toggle_host` (défaut : l'autre entre 1 et 2). Le divert est re-posé à chaque
+retour de la souris (il ne survit pas au changement d'hôte). Config :
+`button_cid` / `toggle_host` dans `[logitech]`. `--logi-probe` liste les CID.
+Vérifié côté récepteur Bolt (Linux). Côté Mac (appairage direct) : la lecture
+des notifications passe par le handle persistant `mouse_handle` — la souris
+s'ouvre sans problème sur macOS d'après docs/macos.md, mais le chemin n'a pas
+encore été exécuté là-bas : à valider (un appui pouce → tout part vers l'Arch).
+
 ### Backlog v2.x
 - macOS : `NSPasteboard.changeCount` (éviter la relecture d'images au polling),
   type `org.nspasteboard.ConcealedType`, plist launchd.

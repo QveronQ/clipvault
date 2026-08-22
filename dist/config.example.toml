@@ -29,3 +29,6 @@ ignore_password_hint = true
 # mouse_host = 1
 # keyboard = "MX Keys"   # optionnel, sinon détection par type
 # mouse = "MX Master"    # optionnel, sinon détection par type
+# button_cid = 0xC3      # bouton souris déclenchant la bascule (défaut 0xC3 =
+#                        # bouton pouce MX Master ; 0 = désactivé)
+# toggle_host = 2        # cible du bouton (défaut : l'autre entre 1 et 2)

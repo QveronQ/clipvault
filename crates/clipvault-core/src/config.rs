@@ -42,6 +42,14 @@ pub struct LogiConfig {
     /// Sous-chaîne du nom de la souris (ex. "MX Master") ; défaut : par type.
     #[serde(default)]
     pub mouse: Option<String>,
+    /// Bouton de la souris déclenchant la bascule clavier+souris (CID HID++,
+    /// détourné via la feature 0x1b04). Défaut : 0xC3 (bouton pouce MX Master).
+    /// Mettre 0 pour désactiver. `--logi-probe` liste les CID disponibles.
+    #[serde(default)]
+    pub button_cid: Option<u16>,
+    /// Hôte cible du bouton. Défaut : l'autre entre 1 et 2 (3 - mouse_host).
+    #[serde(default)]
+    pub toggle_host: Option<u8>,
 }
 
 impl Default for Config {
