@@ -768,6 +768,7 @@ name = "clipvault-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "blake3",
  "clipvault-core",
  "hostname",

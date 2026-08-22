@@ -1,3 +1,4 @@
+mod capture;
 mod clipboard;
 mod ipc;
 mod store;
@@ -67,8 +68,8 @@ fn main() -> Result<()> {
         .name("ingest".into())
         .spawn(move || {
             for msg in rx {
-                let mime = msg.context.mime_type;
-                let data = msg.context.context;
+                let mime = msg.mime;
+                let data = msg.data;
 
                 if data.is_empty() {
                     continue;

@@ -20,6 +20,12 @@ const FONT_CANDIDATES: &[&str] = &[
     "/usr/share/fonts/cantarell/Cantarell-VF.otf",
 ];
 
+/// Fallback pour les glyphes absents de la fonte UI (flèches, ⏎, symboles Nerd Font).
+const SYMBOL_FALLBACKS: &[&str] = &[
+    "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf",
+];
+
 pub fn setup(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     for path in FONT_CANDIDATES {
@@ -32,6 +38,21 @@ pub fn setup(ctx: &egui::Context) {
                 .get_mut(&egui::FontFamily::Proportional)
                 .unwrap()
                 .insert(0, "ui".into());
+            break;
+        }
+    }
+    for path in SYMBOL_FALLBACKS {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts
+                .font_data
+                .insert("symbols".into(), egui::FontData::from_owned(bytes).into());
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts
+                    .families
+                    .get_mut(&family)
+                    .unwrap()
+                    .push("symbols".into());
+            }
             break;
         }
     }

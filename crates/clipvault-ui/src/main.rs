@@ -433,26 +433,66 @@ impl App {
     fn draw_footer(&self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
         let y = rect.bottom() - 30.0;
+        let center_y = y + 15.0;
         ui.painter().hline(
             rect.left()..=rect.right(),
             y,
             egui::Stroke::new(1.0, theme::SURFACE0),
         );
-        let hints = if self.devices.len() > 1 {
-            "↑↓ naviguer    ⏎ copier    ctrl+p épingler    suppr effacer    tab machine"
-        } else {
-            "↑↓ naviguer    ⏎ copier    ctrl+p épingler    suppr effacer"
-        };
-        ui.painter().text(
-            egui::pos2(rect.left() + 18.0, y + 15.0),
-            Align2::LEFT_CENTER,
-            hints,
-            FontId::proportional(11.0),
-            theme::OVERLAY,
-        );
+
+        // Raccourcis rendus comme des touches de clavier ("keycaps").
+        let mut hints: Vec<(&str, &str)> = vec![
+            ("↑↓", "naviguer"),
+            ("entrée", "copier"),
+            ("ctrl+p", "épingler"),
+            ("suppr", "effacer"),
+        ];
+        if self.devices.len() > 1 {
+            hints.push(("tab", "machine"));
+        }
+        let mut x = rect.left() + 16.0;
+        for (key, action) in hints {
+            let key_galley = ui.painter().layout_no_wrap(
+                key.to_string(),
+                FontId::proportional(10.5),
+                theme::SUBTEXT,
+            );
+            let pad = 6.0;
+            let key_rect = egui::Rect::from_min_size(
+                egui::pos2(x, center_y - 9.0),
+                egui::vec2(key_galley.size().x + pad * 2.0, 18.0),
+            );
+            ui.painter().rect_filled(key_rect, 4.0, theme::SURFACE0);
+            ui.painter().rect_stroke(
+                key_rect,
+                4.0,
+                egui::Stroke::new(1.0, theme::SURFACE1),
+                egui::StrokeKind::Inside,
+            );
+            let key_size = key_galley.size();
+            ui.painter().galley(
+                egui::pos2(x + pad, center_y - key_size.y / 2.0),
+                key_galley,
+                theme::SUBTEXT,
+            );
+            x = key_rect.right() + 6.0;
+            let action_galley = ui.painter().layout_no_wrap(
+                action.to_string(),
+                FontId::proportional(11.0),
+                theme::OVERLAY,
+            );
+            let action_size = action_galley.size();
+            ui.painter().galley(
+                egui::pos2(x, center_y - action_size.y / 2.0),
+                action_galley,
+                theme::OVERLAY,
+            );
+            x += action_size.x + 16.0;
+        }
+
         let count = format!("{} entrées", self.entries.len());
         ui.painter().text(
-            egui::pos2(rect.right() - 18.0, y + 15.0),
+            egui::pos2(rect.right() - 18.0, center_y),
             Align2::RIGHT_CENTER,
             count,
             FontId::proportional(11.0),
