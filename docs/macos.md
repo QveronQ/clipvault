@@ -271,11 +271,26 @@ un piège de diagnostic : `--logi-probe` peut annoncer « ping ok » depuis un
 shell pendant que le daemon échoue en `0xE00002E2`. Comparer les deux contextes,
 pas l'un ou l'autre.
 
-L'autorisation porte sur le binaire exact : le remplacer la casse, sans que
-l'entrée disparaisse du panneau. Retirer puis rajouter l'entrée après chaque
-déploiement — décocher/recocher ne suffit pas. Signer le daemon avec une
-identité stable (certificat auto-signé dans le trousseau `login`) devrait rendre
-l'autorisation permanente ; la piste est ouverte, **non vérifiée**.
+**Signer avec une identité Apple supprime la friction — vérifié.** En signature
+ad-hoc, l'autorisation porte sur le binaire exact : le remplacer la casse, sans
+que l'entrée disparaisse du panneau (il faut alors la retirer puis la rajouter,
+décocher/recocher ne suffit pas). Signé avec une identité Apple Development et
+un identifiant fixe, l'exigence retenue par macOS devient :
+
+```
+identifier "ovh.qdev.clipvault.daemon" and anchor apple generic
+and certificate leaf[subject.CN] = "Apple Development: …"
+```
+
+— aucune mention du condensé du binaire. L'autorisation survit donc aux
+recompilations : vérifié en recompilant, redéployant et re-signant sans toucher
+au panneau, le daemon a continué de piloter la souris. `install-launchagent.sh`
+et `make-app.sh` utilisent automatiquement une identité Apple si la machine en
+a une, et retombent sur l'ad-hoc sinon.
+
+Un certificat auto-signé ne suffit pas : `security import` le place bien dans le
+trousseau, mais il n'apparaît pas comme identité de signature (`security
+find-identity -p codesigning`) sans une étape d'approbation supplémentaire.
 
 ## Reste à faire côté Mac
 

@@ -36,8 +36,16 @@ else
 	echo "note: pas de dist/macos/icon.png, icône générique" >&2
 fi
 
-# Signature ad-hoc : sans elle, macOS retue l'app à chaque reconstruction.
-codesign --force --sign - "$app" 2>/dev/null || true
+# Sans signature, macOS retue l'app à chaque reconstruction. Une identité Apple
+# donne en plus une identité stable, à laquelle les autorisations accordées
+# restent attachées d'une compilation à l'autre.
+identity=$(security find-identity -v -p codesigning 2>/dev/null |
+	grep -oE '"(Apple Development|Developer ID Application): [^"]+"' | head -1 | tr -d '"')
+if [ -n "$identity" ]; then
+	codesign --force --sign "$identity" --timestamp=none "$app"
+else
+	codesign --force --sign - "$app" 2>/dev/null || true
+fi
 
 # Le cache de Launch Services garde l'ancien chemin après un déplacement.
 touch "$app"
