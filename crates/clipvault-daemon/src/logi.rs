@@ -695,6 +695,20 @@ impl Engine {
                 Some((nb, cur)) => out.push_str(&format!(", hôte {cur}/{nb}\n")),
                 None => out.push('\n'),
             }
+            // Feature 0x1815 (HostsInfo) : le périphérique retient le nom de
+            // chaque machine appairée. De quoi déduire les numéros de canal au
+            // lieu de les écrire à la main dans [logitech].
+            if let Ok(Some(fi)) = hidpp_feature_index(&dev, 0xff, 0x1815) {
+                if let Ok(info) = hidpp_call(&dev, 0xff, fi, 0, &[]) {
+                    let nb = info[0];
+                    for h in 0..nb.min(3) {
+                        let name = hidpp_host_name(&dev, 0xff, fi, h).unwrap_or_default();
+                        if !name.is_empty() {
+                            out.push_str(&format!("    canal {} : « {name} »\n", h + 1));
+                        }
+                    }
+                }
+            }
         }
 
         // Boutons détournables de la souris (candidats pour [logitech] button_cid).
@@ -731,6 +745,26 @@ impl Engine {
 }
 
 // ---- Primitives HID++ 2.0 ----
+
+/// Nom de la machine appairée sur un canal (feature 0x1815, fonction 2).
+/// Le nom arrive par tranches, indexées par l'octet de départ.
+fn hidpp_host_name(dev: &HidDevice, dev_idx: u8, feat_idx: u8, host: u8) -> Result<String> {
+    // Fonction 1 (getHostInfo) donne la longueur du nom.
+    let info = hidpp_call(dev, dev_idx, feat_idx, 1, &[host])?;
+    let len = info[4] as usize;
+    let mut out = Vec::with_capacity(len);
+    while out.len() < len.min(64) {
+        let chunk = hidpp_call(dev, dev_idx, feat_idx, 2, &[host, out.len() as u8])?;
+        // [0] = index de l'hôte, [1] = octet de départ, le reste = le texte.
+        let text = &chunk[2..];
+        if text.iter().all(|&b| b == 0) {
+            break;
+        }
+        out.extend(text.iter().take_while(|&&b| b != 0));
+    }
+    out.truncate(len);
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
+}
 
 /// Traduit les refus d'ouverture HID de macOS, dont les codes se ressemblent
 /// et n'ont pas du tout les mêmes causes ni les mêmes remèdes.
