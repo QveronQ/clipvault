@@ -159,6 +159,22 @@ des notifications passe par le handle persistant `mouse_handle` — la souris
 s'ouvre sans problème sur macOS d'après docs/macos.md, mais le chemin n'a pas
 encore été exécuté là-bas : à valider (un appui pouce → tout part vers l'Arch).
 
+### Bascule depuis le Mac — synthèse (autorisations macOS)
+
+- **Souris : faisable.** Résoudre par product_id au moment de l'envoi (le
+  registry ID change à chaque reconnexion), ouvrir NON exclusif
+  (`HidApi::set_open_exclusive(false)`) ou très brièvement (open → 0x1814
+  setCurrentHost → close). Autorisation « Surveillance de l'entrée » requise
+  pour LE BINAIRE du daemon (pas le Terminal !) ; la signature ad-hoc change à
+  chaque rebuild → re-cocher dans Réglages, puis redémarrer le LaunchAgent.
+- **Clavier : impossible sans root** (kIOReturnNotPrivileged, protection
+  noyau anti-keylogger, Input Monitoring n'y change rien — déjà vérifié).
+  Ne pas insister ; un LaunchDaemon root dédié serait la seule voie, non
+  retenue pour l'instant.
+- **Design retenu pour Mac → Linux** : le raccourci Mac ne bascule que la
+  souris ; le trajet complet passe par le bouton canal physique du clavier +
+  le flux automatique KeyboardHere qui ramène la souris (déjà fonctionnel).
+
 ### Backlog v2.x
 - macOS : `NSPasteboard.changeCount` (éviter la relecture d'images au polling),
   type `org.nspasteboard.ConcealedType`, plist launchd.
