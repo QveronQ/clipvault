@@ -104,6 +104,25 @@ pub fn run(
             Some(e) => e,
             None => continue,
         };
+
+        // Bouton de bascule : à dépiler AVANT les pings (voir poll_button).
+        match e.poll_button() {
+            Ok(true) => {
+                let target = cfg
+                    .toggle_host
+                    .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
+                info!("logitech: bouton souris pressé, bascule vers l'hôte {target}");
+                let m = e.switch_mouse(target);
+                let k = e.switch_keyboard(target);
+                if let Err(err) = m.and(k) {
+                    warn!("logitech: bascule bouton: {err}");
+                }
+                continue; // clavier parti aussi : inutile de le sonder ce tick
+            }
+            Ok(false) => {}
+            Err(err) => debug!("logitech: bouton: {err}"),
+        }
+
         let present = match e.keyboard_present() {
             Ok(p) => p,
             Err(err) => {
@@ -127,22 +146,6 @@ pub fn run(
             }
         }
 
-        // Bouton de bascule détourné sur la souris.
-        match e.poll_button() {
-            Ok(true) => {
-                let target = cfg
-                    .toggle_host
-                    .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
-                info!("logitech: bouton souris pressé, bascule vers l'hôte {target}");
-                let m = e.switch_mouse(target);
-                let k = e.switch_keyboard(target);
-                if let Err(err) = m.and(k) {
-                    warn!("logitech: bascule bouton: {err}");
-                }
-            }
-            Ok(false) => {}
-            Err(err) => debug!("logitech: bouton: {err}"),
-        }
     }
 }
 
@@ -510,12 +513,17 @@ impl Engine {
         Ok(())
     }
 
-    /// À appeler à chaque tick : gère le divert (re-pose après reconnexion) et
-    /// renvoie true si le bouton de bascule vient d'être pressé.
+    /// À appeler à chaque tick — et AVANT tout ping du même tick : les pings
+    /// lisent la même file hidraw et jettent les rapports qui ne matchent pas
+    /// leur réponse, donc les notifications de bouton accumulées depuis le
+    /// tick précédent doivent être dépilées d'abord.
+    /// Gère aussi le divert (re-pose après reconnexion). Renvoie true si le
+    /// bouton de bascule vient d'être pressé.
     pub fn poll_button(&mut self) -> Result<bool> {
         let Some(cid) = self.button_cid() else {
             return Ok(false);
         };
+        let fired = self.drain_button_events()?;
         self.scan()?;
         let present = self.mouse_here()?;
         let arrived = present && self.mouse_present != Some(true);
@@ -529,7 +537,7 @@ impl Engine {
         if arrived || self.button.is_none() {
             self.setup_button(cid)?;
         }
-        self.drain_button_events()
+        Ok(fired)
     }
 
     /// Dépile les notifications en attente ; true si front montant sur le CID.
@@ -554,6 +562,10 @@ impl Engine {
                 }
                 // divertedButtonsEvent (event 0) : liste des CID pressés.
                 if buf[0] == 0x11 && buf[1] == dev_idx && buf[2] == feat_idx && buf[3] == 0x00 {
+                    debug!(
+                        "logitech: divertedButtonsEvent: {:02x?}",
+                        &buf[4..12]
+                    );
                     let now_pressed = (0..4).any(|i| {
                         u16::from_be_bytes([buf[4 + 2 * i], buf[5 + 2 * i]]) == cid
                     });
