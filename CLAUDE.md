@@ -92,9 +92,34 @@ Linux sans nécessité). Commits + push sur `main` (repo : `QveronQ/clipvault`).
   `CLIPVAULT_SOCKET` (chemin du socket IPC), `CLIPVAULT_DEVICE` (force
   l'identifiant machine) — permettent plusieurs daemons sur une même machine.
 
+## Mission en cours côté Mac : écran de connexion (UI)
+
+En plus de la mission macOS ci-dessus, l'agent Mac implémente l'écran de
+connexion au serveur dans `clipvault-ui`. Spécification :
+
+- Point d'entrée : l'écran **Gestion** (engrenage `⚙`, `main.rs::draw_manage`).
+  Quand `sync_cfg` est `None`, remplacer le message statique par un petit
+  formulaire : champ URL (prérempli avec le serveur local détecté par
+  `probe_local` s'il y en a un), champ token, bouton « Tester » (GET
+  `/v1/status` avec le token → affiche version/machines ou l'erreur), bouton
+  « Enregistrer ».
+- « Enregistrer » écrit la section `[sync]` dans `~/.config/clipvault/config.toml`
+  en PRÉSERVANT les autres clés existantes (relire le fichier, ne pas l'écraser
+  aveuglément). Ajouter `Config::save_sync(&SyncConfig)` dans
+  `clipvault-core::config` avec un test.
+- Après enregistrement : message « redémarre le daemon pour activer la sync »
+  (le daemon ne recharge pas sa config à chaud pour l'instant).
+- Style : réutiliser `theme.rs` et les patterns existants (`kv`, `section_title`).
+  Textes en français. Ne pas toucher au protocole ni au serveur.
+- Optionnel (si le reste est fait) : découverte mDNS `_clipvault._tcp` — côté
+  serveur l'annonce, côté UI la liste des serveurs découverts. Crate suggérée :
+  `mdns-sd`. Sinon, laisser au backlog.
+
+Pendant cette mission, l'agent Linux ne touche pas à `clipvault-ui` ni à
+`clipvault-core::config` (éviter les conflits). Coordination via commits sur
+`main` (pull avant de pousser, pas de force).
+
 ### Backlog v2.x
-- Écran de config dans l'UI : découverte du serveur (mDNS `_clipvault._tcp`
-  annoncé par le serveur) + saisie manuelle URL/token → écrit `config.toml`.
 - macOS : `NSPasteboard.changeCount` (éviter la relecture d'images au polling),
   type `org.nspasteboard.ConcealedType`, plist launchd.
 - Statut de sync dans l'UI (connecté/hors-ligne, taille de l'outbox — la
