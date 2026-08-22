@@ -1,0 +1,10 @@
+// À intégrer dans ~/.config/niri/config.kdl
+
+// Dans le bloc binds { ... } :
+//     Mod+V { spawn "/home/quentin/.local/bin/clipvault"; }
+
+// À la racine de la config (fenêtre flottante centrée) :
+window-rule {
+    match app-id="clipvault"
+    open-floating true
+}

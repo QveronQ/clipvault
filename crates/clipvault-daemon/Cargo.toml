@@ -1,0 +1,22 @@
+[package]
+name = "clipvault-daemon"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+blake3 = "1.8.7"
+clipvault-core = { path = "../clipvault-core" }
+hostname = "0.4.2"
+image = "0.25.10"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = "1.0.229"
+serde_json = "1.0.151"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ulid = "3.0.0"
+wayland-clipboard-listener = { version = "0.6.1", features = ["wlr-data-control"] }
+wl-clipboard-rs = "0.9.3"
+
+[dev-dependencies]
+tempfile = "3.27.0"

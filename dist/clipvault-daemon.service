@@ -1,0 +1,12 @@
+[Unit]
+Description=Clipvault — daemon d'historique du presse-papier
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/clipvault-daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

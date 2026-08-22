@@ -1,0 +1,113 @@
+mod clipboard;
+mod ipc;
+mod store;
+mod watcher;
+
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyhow::Result;
+use clipvault_core::config::Config;
+use clipvault_core::types::ContentKind;
+use tracing::{info, warn};
+use tracing_subscriber::EnvFilter;
+
+use store::Store;
+
+const PASSWORD_HINT_MIME: &str = "x-kde-passwordManagerHint";
+
+fn classify(mime: &str) -> ContentKind {
+    let lower = mime.to_ascii_lowercase();
+    if lower.starts_with("text/")
+        || matches!(mime, "UTF8_STRING" | "STRING" | "TEXT" | "COMPOUND_TEXT")
+    {
+        ContentKind::Text
+    } else if lower.starts_with("image/") {
+        ContentKind::Image
+    } else {
+        ContentKind::Binary
+    }
+}
+
+fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let cfg = Config::load();
+    let device_id = hostname::get()
+        .map(|h| h.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "unknown".into());
+    info!(
+        "clipvault-daemon démarre (device: {device_id}, data: {})",
+        cfg.data_dir().display()
+    );
+
+    let store = Arc::new(Mutex::new(Store::open(cfg.clone(), device_id)?));
+
+    // Thread watcher Wayland -> canal -> thread d'ingestion.
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("wl-watcher".into())
+        .spawn(move || {
+            if let Err(e) = watcher::run(tx) {
+                // Sans watcher le daemon n'a plus de raison d'être : on sort,
+                // systemd (Restart=on-failure) relancera.
+                eprintln!("watcher fatal: {e}");
+                std::process::exit(1);
+            }
+        })?;
+
+    let ingest_store = Arc::clone(&store);
+    let ingest_cfg = cfg.clone();
+    std::thread::Builder::new()
+        .name("ingest".into())
+        .spawn(move || {
+            for msg in rx {
+                let mime = msg.context.mime_type;
+                let data = msg.context.context;
+
+                if data.is_empty() {
+                    continue;
+                }
+                if data.len() as u64 > ingest_cfg.max_item_bytes {
+                    info!("capture ignorée: {} octets > max_item_bytes", data.len());
+                    continue;
+                }
+                if ingest_cfg.ignore_password_hint
+                    && msg
+                        .mime_types
+                        .iter()
+                        .any(|m| m.eq_ignore_ascii_case(PASSWORD_HINT_MIME))
+                {
+                    info!("capture ignorée: marquée confidentielle (password manager)");
+                    continue;
+                }
+
+                let kind = classify(&mime);
+                match ingest_store.lock().unwrap().insert(kind, &mime, &data) {
+                    Ok(id) => info!("capturé {} ({mime}, {} octets)", id, data.len()),
+                    Err(e) => warn!("échec d'ingestion: {e}"),
+                }
+            }
+        })?;
+
+    // Purge périodique des vieilles entrées.
+    let purge_store = Arc::clone(&store);
+    std::thread::Builder::new()
+        .name("purge".into())
+        .spawn(move || loop {
+            match purge_store.lock().unwrap().purge() {
+                Ok(0) => {}
+                Ok(n) => info!("purge: {n} entrées supprimées"),
+                Err(e) => warn!("purge: {e}"),
+            }
+            std::thread::sleep(Duration::from_secs(3600));
+        })?;
+
+    // Serveur IPC sur le thread principal (bloquant).
+    ipc::serve(store)
+}

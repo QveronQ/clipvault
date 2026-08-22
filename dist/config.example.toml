@@ -1,0 +1,17 @@
+# Configuration clipvault — à copier dans ~/.config/clipvault/config.toml
+# Toutes les clés sont optionnelles (valeurs par défaut ci-dessous).
+
+# Taille max d'un élément capturé, en octets (défaut : 10 Mo)
+max_item_bytes = 10485760
+
+# Rétention des entrées non épinglées, en jours
+retention_days = 90
+
+# Nombre max d'entrées non épinglées conservées
+max_entries = 10000
+
+# Ignorer les copies marquées confidentielles (x-kde-passwordManagerHint)
+ignore_password_hint = true
+
+# Répertoire de données (défaut : ~/.local/share/clipvault)
+# data_dir = "/chemin/perso"
