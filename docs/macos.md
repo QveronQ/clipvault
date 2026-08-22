@@ -165,6 +165,43 @@ Si quelqu'un veut ressusciter la fonctionnalité côté Mac, il faudra une autre
 voie que le handle hidapi persistant (IOHIDManager en mode non-exclusif, ou un
 tap sur les événements) — non exploré.
 
+### 5. Réinstaller le binaire invalide l'autorisation « Saisie de contenu »
+
+Le piège le plus vicieux des cinq, parce qu'il **se manifeste à retardement et
+que le panneau Réglages ment**. macOS attache l'autorisation à un binaire
+précis ; `install`-er une nouvelle version au même chemin la casse, mais
+l'entrée **reste affichée et cochée** dans Confidentialité > Saisie de contenu.
+Tout a l'air en ordre, et le daemon ne peut plus ouvrir la souris.
+
+Symptôme : la bascule marche dans le sens Arch → Mac (c'est l'Arch qui agit),
+mais pas Mac → Arch — le Mac n'arrive plus à envoyer le Change Host. Dans les
+logs :
+
+```
+sync: clavier arrivé sur omarchie2, souris -> hôte 1
+WARN logitech: change host: … (0xE00002E2) (iokit/common) not permitted
+```
+
+Remède : **retirer puis rajouter** l'entrée (la simple case à décocher/recocher
+ne suffit pas). À refaire après chaque déploiement du daemon —
+`install-launchagent.sh` le rappelle désormais en fin d'installation.
+
+Attention au diagnostic : lancer `--logi-probe` **depuis un terminal** ne
+reproduit pas le problème, le terminal ayant sa propre autorisation. Le probe
+dit alors « ping ok, change-host oui » pendant que le daemon échoue. Il faut
+comparer les deux contextes.
+
+### Les trois refus d'ouverture HID de macOS
+
+Ils se ressemblent et n'ont rien à voir. `explain_hid_error()` les traduit dans
+les logs :
+
+| Code | Cause | Remède |
+|---|---|---|
+| `0xE00002E2` not permitted | autorisation « Saisie de contenu » absente ou périmée | retirer/rajouter le binaire |
+| `0xE00002C5` exclusive access | un autre process tient l'appareil | tuer le second daemon |
+| `0xE00002C1` privilege violation | c'est un clavier — interdit par macOS | aucun, contourné par l'énumération |
+
 ## Point d'attention sur le protocole de sync
 
 Relevé dans les logs pendant que mon daemon était en retard d'une version :

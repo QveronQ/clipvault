@@ -90,7 +90,10 @@ pub fn run(
                     LogiCommand::SwitchBoth { host } => switch_both(e, host),
                 };
                 if let Err(err) = result {
-                    warn!("logitech: change host: {err}");
+                    match explain_hid_error(&err) {
+                        Some(hint) => warn!("logitech: change host: {err} — {hint}"),
+                        None => warn!("logitech: change host: {err}"),
+                    }
                     engine = None; // matériel peut-être débranché : on ré-ouvrira
                 }
                 continue;
@@ -723,6 +726,29 @@ impl Engine {
 }
 
 // ---- Primitives HID++ 2.0 ----
+
+/// Traduit les refus d'ouverture HID de macOS, dont les codes se ressemblent
+/// et n'ont pas du tout les mêmes causes ni les mêmes remèdes.
+fn explain_hid_error(err: &anyhow::Error) -> Option<&'static str> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let msg = err.to_string();
+    if msg.contains("0xE00002E2") {
+        // TCC. Piège classique : réinstaller le binaire invalide l'autorisation,
+        // qui est attachée à ce binaire précis — l'entrée reste pourtant cochée
+        // dans le panneau, ce qui donne l'illusion que tout va bien.
+        Some(
+            "autorisation « Saisie de contenu » manquante — ajouter ce binaire dans              Réglages > Confidentialité et sécurité > Saisie de contenu (à REFAIRE              après chaque mise à jour du binaire : l'ancienne entrée devient caduque)",
+        )
+    } else if msg.contains("0xE00002C5") {
+        Some("appareil déjà ouvert par un autre process (un second clipvault-daemon ?)")
+    } else if msg.contains("0xE00002C1") {
+        Some("macOS interdit d'ouvrir un clavier, quelle que soit l'autorisation")
+    } else {
+        None
+    }
+}
 
 /// Requête longue (0x11) + attente de la réponse correspondante.
 fn hidpp_call(

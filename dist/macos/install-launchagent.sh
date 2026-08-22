@@ -61,5 +61,12 @@ echo "installé: $plist"
 echo "binaire : $bin"
 echo "logs    : $log"
 echo
+echo "ATTENTION — Easy-Switch Logitech : remplacer le binaire invalide son"
+echo "autorisation « Saisie de contenu », sans que macOS le signale (l'entrée"
+echo "reste cochée dans le panneau). Sans elle le daemon ne peut plus parler à"
+echo "la souris et la bascule échoue avec 0xE00002E2. À refaire maintenant :"
+echo "  Réglages > Confidentialité et sécurité > Saisie de contenu"
+echo "  retirer l'entrée $bin puis la rajouter"
+echo
 echo "  launchctl print gui/$(id -u)/$label   # état"
 echo "  tail -f $log                          # suivre les logs"
