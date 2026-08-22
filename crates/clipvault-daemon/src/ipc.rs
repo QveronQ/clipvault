@@ -19,6 +19,8 @@ pub struct SyncCtx {
     pub cfg: Option<SyncConfig>,
     /// Mis à jour par le thread de réception (connecté au flux ou non).
     pub connected: Arc<AtomicBool>,
+    /// Canal vers le thread Logitech (None si [logitech] absent).
+    pub logi: Option<std::sync::mpsc::Sender<crate::logi::LogiCommand>>,
 }
 
 pub fn serve(store: Arc<Mutex<Store>>, sync_ctx: SyncCtx) -> Result<()> {
@@ -136,6 +138,16 @@ fn handle_request(req: Request, store: &Mutex<Store>, sync_ctx: &SyncCtx) -> Res
                 let (entries, bytes) = store.lock().unwrap().stats()?;
                 Ok(Response::Stats { entries, bytes })
             }
+            Request::SwitchHost { host } => match &sync_ctx.logi {
+                Some(tx) => {
+                    tx.send(crate::logi::LogiCommand::SwitchBoth { host })
+                        .map_err(|_| anyhow::anyhow!("thread logitech arrêté"))?;
+                    Ok(Response::Ok)
+                }
+                None => Ok(Response::Error {
+                    message: "section [logitech] absente de la config".into(),
+                }),
+            },
             Request::SyncStatus => {
                 let s = store.lock().unwrap();
                 Ok(Response::SyncStatus {

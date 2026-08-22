@@ -20,6 +20,26 @@ use store::Store;
 
 const PASSWORD_HINT_MIME: &str = "x-kde-passwordManagerHint";
 
+/// Client IPC minimal pour le raccourci de bascule.
+fn switch_host_client(host: u8) -> Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    let path = clipvault_core::socket_path();
+    let mut stream = std::os::unix::net::UnixStream::connect(&path)
+        .map_err(|e| anyhow::anyhow!("daemon injoignable ({}): {e}", path.display()))?;
+    let req = serde_json::to_string(&clipvault_core::ipc::Request::SwitchHost { host })?;
+    stream.write_all(format!("{req}\n").as_bytes())?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    match serde_json::from_str::<clipvault_core::ipc::Response>(&line)? {
+        clipvault_core::ipc::Response::Ok => {
+            println!("clavier + souris envoyés vers l'hôte {host}");
+            Ok(())
+        }
+        clipvault_core::ipc::Response::Error { message } => anyhow::bail!(message),
+        other => anyhow::bail!("réponse inattendue: {other:?}"),
+    }
+}
+
 fn classify(mime: &str) -> ContentKind {
     let lower = mime.to_ascii_lowercase();
     if lower.starts_with("text/")
@@ -34,6 +54,17 @@ fn classify(mime: &str) -> ContentKind {
 }
 
 fn main() -> Result<()> {
+    // Mode client : `clipvault-daemon --switch-host N` demande au daemon qui
+    // tourne d'envoyer clavier + souris Logitech vers l'hôte N (raccourci).
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--switch-host") {
+        let host: u8 = args
+            .get(i + 1)
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| anyhow::anyhow!("usage: clipvault-daemon --switch-host <1-3>"))?;
+        return switch_host_client(host);
+    }
+
     // Diagnostic : `clipvault-daemon --logi-probe` liste les périphériques
     // Logitech visibles (slots du récepteur, noms, support Change Host).
     if std::env::args().any(|a| a == "--logi-probe") {
@@ -162,10 +193,11 @@ fn main() -> Result<()> {
         let recv_store = Arc::clone(&store);
         let recv_connected = Arc::clone(&sync_connected);
         let recv_device = device_id.clone();
+        let recv_logi = logi_tx.clone();
         std::thread::Builder::new()
             .name("sync-recv".into())
             .spawn(move || {
-                sync::run_recv(recv_store, sync_cfg, recv_device, recv_connected, logi_tx)
+                sync::run_recv(recv_store, sync_cfg, recv_device, recv_connected, recv_logi)
             })?;
     }
 
@@ -188,6 +220,7 @@ fn main() -> Result<()> {
         ipc::SyncCtx {
             cfg: cfg.sync.clone(),
             connected: sync_connected,
+            logi: logi_tx,
         },
     )
 }

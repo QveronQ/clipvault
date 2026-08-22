@@ -28,6 +28,9 @@ pub enum Request {
     Stats,
     /// État de la synchronisation du daemon.
     SyncStatus,
+    /// Envoie clavier ET souris Logitech vers cet hôte Easy-Switch (1-3).
+    /// Fallback local du suivi automatique : tout est encore connecté ici.
+    SwitchHost { host: u8 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

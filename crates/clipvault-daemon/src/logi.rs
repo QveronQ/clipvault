@@ -18,10 +18,12 @@ use tracing::{debug, info, warn};
 
 use crate::store::Store;
 
-/// Ordre reçu du serveur de sync (via le thread de réception).
+/// Ordre reçu du serveur de sync ou de l'IPC.
 pub enum LogiCommand {
     /// Envoyer la souris vers cet hôte Easy-Switch (1-3).
     SwitchMouse { host: u8 },
+    /// Envoyer souris ET clavier vers cet hôte (raccourci local).
+    SwitchBoth { host: u8 },
 }
 
 const VID_LOGITECH: u16 = 0x046d;
@@ -66,17 +68,27 @@ pub fn run(
     loop {
         // Le canal sert aussi de tick (1 s).
         match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(LogiCommand::SwitchMouse { host }) => {
+            Ok(cmd) => {
                 let e = match ensure_engine(&mut engine, &cfg) {
                     Some(e) => e,
                     None => continue,
                 };
-                match e.switch_mouse(host) {
-                    Ok(()) => info!("logitech: souris envoyée vers l'hôte {host}"),
-                    Err(err) => {
-                        warn!("logitech: change host: {err}");
-                        engine = None; // matériel peut-être débranché : on ré-ouvrira
+                let result = match cmd {
+                    LogiCommand::SwitchMouse { host } => e
+                        .switch_mouse(host)
+                        .map(|()| info!("logitech: souris envoyée vers l'hôte {host}")),
+                    LogiCommand::SwitchBoth { host } => {
+                        // Souris d'abord : une fois le clavier parti, tout est
+                        // encore joignable, mais autant garder l'ordre sûr.
+                        let m = e.switch_mouse(host);
+                        let k = e.switch_keyboard(host);
+                        m.and(k)
+                            .map(|()| info!("logitech: clavier + souris envoyés vers l'hôte {host}"))
                     }
+                };
+                if let Err(err) = result {
+                    warn!("logitech: change host: {err}");
+                    engine = None; // matériel peut-être débranché : on ré-ouvrira
                 }
                 continue;
             }
@@ -353,16 +365,28 @@ impl Engine {
 
     /// Envoie la souris vers l'hôte Easy-Switch `host` (1-3).
     pub fn switch_mouse(&mut self, host: u8) -> Result<()> {
+        self.scan()?;
+        let target = self.mouse.clone();
+        self.change_host(target.as_ref(), host, "souris")
+    }
+
+    /// Envoie le clavier vers l'hôte Easy-Switch `host` (1-3).
+    pub fn switch_keyboard(&mut self, host: u8) -> Result<()> {
+        self.scan()?;
+        let target = self.keyboard.clone();
+        self.change_host(target.as_ref(), host, "clavier")
+    }
+
+    fn change_host(&self, target: Option<&Target>, host: u8, label: &str) -> Result<()> {
         if host == 0 || host > 3 {
             bail!("hôte invalide: {host}");
         }
-        self.scan()?;
         let host0 = host - 1; // la feature 0x1814 compte à partir de 0
-        match &self.mouse {
+        match target {
             Some(Target::Receiver { slot }) => {
                 let recv = self.receiver.as_ref().ok_or_else(|| anyhow!("récepteur fermé"))?;
                 let fi = hidpp_feature_index(recv, *slot, 0x1814)?
-                    .ok_or_else(|| anyhow!("la souris n'a pas la feature Change Host"))?;
+                    .ok_or_else(|| anyhow!("{label}: pas de feature Change Host"))?;
                 // setCurrentHost ne répond pas toujours (le lien part aussitôt) :
                 // on ignore le timeout de lecture.
                 let _ = hidpp_call(recv, *slot, fi, 1, &[host0]);
@@ -372,11 +396,11 @@ impl Engine {
                 let path = self.resolve_direct(*pid).unwrap_or_else(|| path.clone());
                 let dev = self.api.open_path(&path)?;
                 let fi = hidpp_feature_index(&dev, 0xff, 0x1814)?
-                    .ok_or_else(|| anyhow!("la souris n'a pas la feature Change Host"))?;
+                    .ok_or_else(|| anyhow!("{label}: pas de feature Change Host"))?;
                 let _ = hidpp_call(&dev, 0xff, fi, 1, &[host0]);
                 Ok(())
             }
-            None => bail!("souris introuvable ici"),
+            None => bail!("{label} introuvable ici"),
         }
     }
 
