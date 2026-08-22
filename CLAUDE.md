@@ -233,6 +233,18 @@ ce qui confirme au passage que le clavier est accessible sans root.
   Le bouton pouce côté Mac redevient envisageable grâce au non-exclusif —
   toujours conditionné à l'autorisation TCC du daemon.
 
+### Latence de détection (fait côté Linux, équivalent Mac à faire)
+
+Linux/récepteur : notifications de connexion 0x41 activées (SET_REGISTER 0x00,
+flag wireless) + boucle scindée (tick 200 ms dépile les notifications — lecture
+locale ; pings/scans inchangés à 1 s). Départ du clavier confirmé par double
+ping (150 ms) avant de faire suivre la souris → latence < 1 s, zéro radio en
+plus. Côté Mac (Bluetooth direct, pas de récepteur donc pas de 0x41) : au
+choix, énumération IOKit sur le tick rapide (locale, pas de radio — mesurer le
+coût CPU de refresh_devices à 5 Hz) ou callbacks de retrait IOHIDManager si
+hidapi les expose. La latence plancher reste le délai de détection de la
+déconnexion BT par macOS.
+
 ### Backlog v2.x
 - macOS : `NSPasteboard.changeCount` (éviter la relecture d'images au polling),
   type `org.nspasteboard.ConcealedType`, plist launchd.
