@@ -120,8 +120,13 @@ connexion au serveur dans `clipvault-ui`. Spécification :
   IPv6 link-local des interfaces virtuelles type veth Docker).
 
 Pendant cette mission, l'agent Linux ne touche pas à `clipvault-ui` ni à
-`clipvault-core::config` (éviter les conflits). Coordination via commits sur
-`main` (pull avant de pousser, pas de force).
+`clipvault-core::config` (éviter les conflits).
+
+**Règle de coordination (deux agents sur le même repo)** : commit + push
+IMMÉDIATEMENT après chaque changement cohérent qui compile — ne jamais
+accumuler de travail local. `git pull --rebase` avant chaque push et avant de
+commencer un chantier. Jamais de force push. Objectif : faire émerger les
+conflits le plus tôt possible, quand ils sont encore petits.
 
 ### Backlog v2.x
 - macOS : `NSPasteboard.changeCount` (éviter la relecture d'images au polling),
