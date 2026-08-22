@@ -1,0 +1,185 @@
+# clipvault sur macOS — rapport pour l'agent Linux
+
+Machine : MacBook Air (Apple Silicon), macOS 26.3, `device_id` = `MacBookAir`.
+Tout ce qui suit a été **exécuté et vérifié** sur cette machine, sauf mention
+explicite du contraire.
+
+## Résumé
+
+| Domaine | État |
+|---|---|
+| Build workspace complet (serveur compris) | ✅ aucune erreur, aucun warning nouveau |
+| `cargo test` (dont l'e2e de sync) | ✅ 15 tests |
+| Capture presse-papier texte / image | ✅ |
+| Recopie (`Activate`) texte / image | ✅ |
+| Sync bidirectionnelle avec omarchie2 | ✅ dans les deux sens |
+| Écran de connexion au serveur (UI) | ✅ |
+| Easy-Switch Logitech en Bluetooth direct | ✅ après 3 correctifs |
+| Bundle `.app` + LaunchAgent | ✅ |
+
+Le backend macOS (`watcher.rs::polled`, `clipboard.rs` branche arboard) a
+compilé **du premier coup**, sans retouche. Les vrais problèmes étaient
+ailleurs.
+
+## Pièges macOS rencontrés (les branches `cfg` n'y suffisaient pas)
+
+### `dirs::config_dir()` ne pointe pas vers `~/.config`
+
+Le plus coûteux, parce qu'il échouait **en silence**. Sur macOS
+`dirs::config_dir()` vaut `~/Library/Application Support`, donc
+`~/.config/clipvault/config.toml` n'était jamais lu : le daemon démarrait sur
+les valeurs par défaut et la sync restait désactivée sans un mot dans les logs.
+
+`Config::config_candidates()` essaie désormais `$XDG_CONFIG_HOME` / `~/.config`
+d'abord, puis `dirs::config_dir()`. **Comportement inchangé sous Linux**, où
+`dirs::config_dir()` est déjà `~/.config`. Le daemon logue maintenant le
+fichier retenu au démarrage — à garder, c'est ce qui rend ce genre de panne
+visible.
+
+À noter : `dirs::data_dir()` reste `~/Library/Application Support/clipvault`,
+et c'est très bien ainsi. La config et les données ne sont donc pas au même
+endroit sur macOS ; c'est voulu.
+
+### Les fontes
+
+Les chemins de `FONT_CANDIDATES` sont tous des chemins Linux. Ajout de
+`/System/Library/Fonts/SFNS.ttf` et `Apple Symbols.ttf` en tête — les chemins
+absents sont simplement sautés, donc rien ne change de ton côté.
+
+### `socket_path()`
+
+Pas de `XDG_RUNTIME_DIR` sur macOS : on retombe sur `env::temp_dir()`, soit
+`$TMPDIR` (`/var/folders/…`), qui est privé à l'utilisateur. Fonctionne tel
+quel, rien à changer.
+
+## Logitech Easy-Switch — trois bugs dans le chemin « appairage direct »
+
+Ce Mac n'a **pas** de récepteur Bolt : MX Keys S et MX Master 3S sont appairés
+en Bluetooth direct. C'est le chemin `dev_idx 0xFF` qui n'avait jamais été
+exécuté. Il ne fonctionnait pas.
+
+### 1. Clavier et souris intervertis (`c365fc1`)
+
+Sans récepteur, pas de `getDeviceType`, et `scan()` passait les types en dur :
+
+```rust
+if keyboard.is_none() && self.matches_keyboard(&name, 0) {      // <- 0 en dur
+} else if mouse.is_none() && self.matches_mouse(&name, 3) {     // <- 3 en dur
+```
+
+Or `matches_keyboard` teste `dtype == 0` : **toujours vrai** quand `[logitech]`
+ne nomme pas les appareils. Le premier périphérique HID++ énuméré devenait donc
+« le clavier ». Ici la souris sortait en premier : un Change Host serait parti
+au clavier.
+
+Le type se déduit maintenant des autres interfaces HID du même `product_id`
+(Generic Desktop, usage 6 = clavier, 2 = souris). **Si la plateforme ne
+renseigne pas les usages HID, on n'attribue plus rien** plutôt que de deviner —
+il faut alors nommer les appareils dans `[logitech]`. À vérifier de ton côté :
+hidraw sous Linux renseigne-t-il `usage_page`/`usage` ? Si non, le chemin
+direct y exigera une config explicite. Ça ne touche pas le chemin récepteur,
+qui reste prioritaire et inchangé.
+
+### 2. Le clavier ne peut pas être ouvert du tout (`fd34548`)
+
+macOS refuse d'ouvrir un `IOHIDDevice` de type clavier :
+`kIOReturnNotPrivileged (0xE00002C1)`. Vérifié sur **toutes** les interfaces du
+MX Keys S (y compris l'interface HID++ `0xff43`), et **avec l'autorisation
+« Saisie de contenu » accordée** : elle ne couvre pas ce cas. C'est la
+protection anti-keylogger du noyau ; il faudrait root, que le projet s'interdit.
+La souris, elle, s'ouvre sans problème — la protection vise le type clavier.
+
+Le ping HID++ est donc impossible sur un clavier macOS, et il passait pour
+absent en permanence. Contournement : **en Bluetooth, un périphérique ne figure
+dans l'énumération HID que s'il est connecté à la machine**. La présence se lit
+donc sans rien ouvrir, sans aucune autorisation. Vérifié en basculant le
+clavier d'un canal à l'autre : détecté en moins d'une seconde.
+
+`keyboard_present()` utilise cette voie pour `Target::Direct` ; le chemin
+récepteur continue de pinguer comme avant.
+
+### 3. Le chemin du périphérique est périmé dès la première bascule (`fd34548`)
+
+Sur macOS, le chemin hidapi est un registry ID (`DevSrvsID:4295039304`) qui
+**change à chaque reconnexion Bluetooth**. Constaté : après un aller-retour du
+clavier, les deux chemins avaient changé. `switch_mouse` ouvrait donc un chemin
+mort dès que la souris s'était reconnectée une fois — bug invisible tant qu'on
+ne teste pas deux bascules d'affilée.
+
+`Target::Direct` porte maintenant le `product_id` (stable), et le chemin est
+re-résolu juste avant l'envoi. Si les chemins hidraw sont stables sous Linux, ce
+correctif n'y change rien ; il ne coûte qu'une recherche dans l'énumération.
+
+### Validation de bout en bout
+
+`--logi-switch N` (ajouté, `4f51afd`) envoie la souris vers un hôte sans monter
+tout le mécanisme — pratique pour isoler le Change Host.
+
+Séquence complète observée, sans intervention :
+
+```
+logitech: actif (mouse_host de cette machine: 2)
+logitech: clavier localisé: Some(direct pid 0xb378)   <- MX KEYS S, le bon
+logitech: clavier détecté ici, on rapatrie la souris
+```
+→ la souris est revenue de l'Arch au Mac toute seule. Dans l'autre sens,
+`--logi-switch 1` l'a bien envoyée sur l'Arch (confirmé de visu là-bas).
+
+`--logi-probe` détaille désormais les périphériques directs : ping, index de la
+feature Change Host, hôte courant. Sortie actuelle :
+
+```
+Clavier: Some(direct pid 0xb378)
+Souris: Some(direct pid 0xb034)
+  Clavier (direct): connecté, non ouvrable (protégé par macOS) — présence détectée par énumération
+  Souris (direct): ping ok, change-host oui (index 10), hôte 2/3
+```
+
+## Point d'attention sur le protocole de sync
+
+Relevé dans les logs pendant que mon daemon était en retard d'une version :
+
+```
+sync: événement illisible: unknown variant `keyboard_here`,
+expected one of `entry`, `deleted`, `pinned`
+```
+
+Sans gravité immédiate — `apply_event` avance le curseur même en erreur, donc
+le flux ne se bloque pas. Mais **un daemon plus ancien que le serveur perd
+silencieusement les événements qu'il ne connaît pas**, et rien ne le signale
+côté serveur. À garder en tête pour les prochaines extensions de `PushItem` :
+il n'y a aujourd'hui aucune négociation de version entre client et serveur.
+
+## Packaging macOS (`dist/macos/`)
+
+- `make-app.sh` assemble `Clipvault.app` depuis le binaire de l'UI.
+  `Info.plist` en `LSUIElement` : popup façon Spotlight, pas d'icône dans le
+  Dock ni dans Cmd+Tab. La **signature ad-hoc est obligatoire**, sinon macOS
+  retue l'app à chaque reconstruction. Génère l'icône si `dist/macos/icon.png`
+  existe.
+- Côté code, `clipvault-ui` règle sur macOS `ActivationPolicy::Accessory` +
+  `activate_ignoring_other_apps` : sans ça une app `LSUIElement` s'ouvre
+  derrière et ne reçoit pas les touches. Ajoute une dépendance `winit` **macOS
+  uniquement**, même version que celle d'eframe (0.30) pour que cargo l'unifie.
+- `install-launchagent.sh` installe le daemon en LaunchAgent (`RunAtLoad` +
+  `KeepAlive`, logs dans `~/Library/Logs/`), équivalent du service systemd
+  user. `--uninstall` pour revenir en arrière.
+
+Raccourci global : pas d'équivalent natif d'un bind de WM. Un Service macOS
+(`~/Library/Services/Clipvault.workflow`) est installé, la touche s'assigne dans
+Réglages → Clavier → Raccourcis → Services. Latence mesurée par CLI : ~90 ms
+pour lancer l'app, mais ~950 ms pour le moteur Automator — ces chiffres passent
+par des CLI qui rechargent leur framework, le chemin réel est plus rapide, non
+mesuré. Si la latence gêne, la bonne solution est un hotkey dans le daemon
+(`RegisterEventHotKey`, pas d'autorisation Accessibilité requise) — mais macOS
+exige une `CFRunLoop` sur le thread principal, or c'est l'IPC qui l'occupe : il
+faudrait les intervertir dans `main.rs`. **Non fait, à coordonner.**
+
+## Reste à faire côté Mac
+
+- Découverte mDNS `_clipvault._tcp` dans le formulaire de connexion (l'annonce
+  serveur est faite ; l'UI ne sonde que `127.0.0.1:7700`).
+- `NSPasteboard.changeCount` pour éviter de relire l'image du presse-papier à
+  chaque tick de 500 ms.
+- Type `org.nspasteboard.ConcealedType` (équivalent du hint password manager).
+- Hotkey global intégré au daemon (voir ci-dessus).

@@ -51,27 +51,29 @@ p=os.environ.get('XDG_RUNTIME_DIR','/tmp')+'/clipvault.sock'
 s=socket.socket(socket.AF_UNIX); s.connect(p); s.sendall(sys.stdin.buffer.read()); print(s.recv(65536).decode())"
 ```
 
-## État macOS (mission de l'agent côté Mac)
+## État macOS — VOIR `docs/macos.md`
 
-Le backend macOS (`watcher.rs` module `polled`, `clipboard.rs` branche arboard)
-a été écrit **sans pouvoir être compilé ni testé sur macOS**. À faire :
+**Le rapport complet est dans [`docs/macos.md`](docs/macos.md)** : ce qui a été
+vérifié sur le MacBook Air, les pièges macOS rencontrés, les bugs corrigés dans
+le code partagé et ce qui reste à faire. À lire avant de toucher à
+`logi.rs`, `config.rs` ou au protocole de sync.
 
-1. `cargo build --release` — corriger les éventuelles erreurs de compilation
-   (elles seront probablement dans les branches `cfg(not(target_os = "linux"))`).
-2. Tester la capture (texte puis image) et la recopie (`Activate` via l'UI).
-3. Points d'attention connus :
-   - le polling relit l'image du presse-papier à chaque tick (500 ms) tant
-     qu'une image y reste — optimisation prévue : `NSPasteboard.changeCount`
-     via `objc2-app-kit` (ne déclencher `get_image` que si le count a changé) ;
-   - pas de détection « password manager » sur macOS pour l'instant
-     (équivalent : type `org.nspasteboard.ConcealedType`) ;
-   - `socket_path()` retombe sur `env::temp_dir()` (pas de `XDG_RUNTIME_DIR`) ;
-   - lancement au démarrage : prévoir un plist `launchd` dans `dist/` (équivalent
-     du `dist/clipvault-daemon.service` systemd) ;
-   - l'UI eframe doit fonctionner telle quelle ; vérifier le rendu de la fenêtre
-     sans décorations + transparence, et adapter `theme.rs` si les fontes
-     candidates n'existent pas (macOS : ajouter p.ex. `/System/Library/Fonts/SFNS.ttf`
-     en tête de `FONT_CANDIDATES` — garder les fallbacks egui sinon).
+En bref : capture, recopie, sync bidirectionnelle, écran de connexion,
+Easy-Switch Logitech et packagement (`.app` + LaunchAgent) sont **opérationnels
+et vérifiés**. Le backend macOS a compilé sans retouche ; les vrais problèmes
+étaient ailleurs. Trois points touchent du code partagé et méritent ton
+attention :
+
+- `dirs::config_dir()` vaut `~/Library/Application Support` sur macOS, donc
+  `~/.config/clipvault/config.toml` n'était jamais lu et **la sync restait
+  désactivée en silence**. `Config::config_candidates()` essaie XDG/`~/.config`
+  d'abord — inchangé sous Linux.
+- `logi.rs`, chemin « appairage direct » (`dev_idx 0xFF`) : trois bugs, dont
+  clavier et souris **intervertis** (le type était passé en dur, `dtype == 0`
+  toujours vrai). Détail et conséquences pour Linux dans le rapport.
+- Un daemon plus ancien que le serveur **perd silencieusement** les événements
+  `PushItem` qu'il ne connaît pas (constaté avec `keyboard_here`). Aucune
+  négociation de version aujourd'hui.
 
 Chaque correction doit rester compatible Linux (ne pas toucher aux branches
 Linux sans nécessité). Commits + push sur `main` (repo : `QveronQ/clipvault`).
