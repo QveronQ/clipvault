@@ -6,9 +6,13 @@ mod theme;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use clipvault_core::config::SyncConfig;
 use clipvault_core::ipc::{Request, Response};
+use clipvault_core::sync::ServerStatus;
 use clipvault_core::types::{ContentKind, EntryMeta};
 use eframe::egui::{self, Align2, Color32, FontId, RichText};
 
@@ -64,6 +68,92 @@ impl Client {
             other => bail!("réponse inattendue: {other:?}"),
         }
     }
+
+    fn stats(&mut self) -> Result<(u64, u64)> {
+        match self.request(&Request::Stats)? {
+            Response::Stats { entries, bytes } => Ok((entries, bytes)),
+            other => bail!("réponse inattendue: {other:?}"),
+        }
+    }
+
+    fn sync_status(&mut self) -> Result<SyncStatusData> {
+        match self.request(&Request::SyncStatus)? {
+            Response::SyncStatus {
+                device,
+                enabled,
+                server,
+                connected,
+                outbox,
+                last_seq,
+            } => Ok(SyncStatusData {
+                device,
+                enabled,
+                server,
+                connected,
+                outbox,
+                last_seq,
+            }),
+            other => bail!("réponse inattendue: {other:?}"),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SyncStatusData {
+    device: String,
+    enabled: bool,
+    server: Option<String>,
+    connected: bool,
+    outbox: u64,
+    last_seq: i64,
+}
+
+/// Écran affiché dans le popup.
+#[derive(PartialEq)]
+enum Screen {
+    List,
+    Manage,
+}
+
+/// État de l'écran de gestion (rafraîchi périodiquement).
+struct ManageState {
+    sync_status: Option<SyncStatusData>,
+    stats: Option<(u64, u64)>,
+    /// Résultat du GET /v1/status, rempli par un thread de fond.
+    server: Arc<Mutex<Option<Result<ServerStatus, String>>>>,
+    /// URL d'un serveur détecté en local quand aucune sync n'est configurée.
+    probe_local: Arc<Mutex<Option<String>>>,
+    last_fetch: Option<Instant>,
+}
+
+impl Default for ManageState {
+    fn default() -> Self {
+        Self {
+            sync_status: None,
+            stats: None,
+            server: Arc::new(Mutex::new(None)),
+            probe_local: Arc::new(Mutex::new(None)),
+            last_fetch: None,
+        }
+    }
+}
+
+fn http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(3)))
+        .build()
+        .into()
+}
+
+fn fetch_server_status(cfg: &SyncConfig) -> Result<ServerStatus, String> {
+    http_agent()
+        .get(format!("{}/v1/status", cfg.server))
+        .header("Authorization", format!("Bearer {}", cfg.token))
+        .call()
+        .map_err(|e| format!("serveur injoignable: {e}"))?
+        .body_mut()
+        .read_json()
+        .map_err(|e| format!("réponse invalide: {e}"))
 }
 
 struct App {
@@ -79,6 +169,9 @@ struct App {
     thumbs: HashMap<String, Option<egui::TextureHandle>>,
     needs_refresh: bool,
     themed: bool,
+    screen: Screen,
+    manage: ManageState,
+    sync_cfg: Option<SyncConfig>,
 }
 
 impl App {
@@ -105,6 +198,42 @@ impl App {
             thumbs: HashMap::new(),
             needs_refresh: true,
             themed: false,
+            screen: Screen::List,
+            manage: ManageState::default(),
+            sync_cfg: clipvault_core::config::Config::load().sync,
+        }
+    }
+
+    /// Rafraîchit les données de l'écran de gestion (toutes les 2 s).
+    fn refresh_manage(&mut self) {
+        let due = self
+            .manage
+            .last_fetch
+            .is_none_or(|t| t.elapsed() > Duration::from_secs(2));
+        if !due {
+            return;
+        }
+        self.manage.last_fetch = Some(Instant::now());
+        self.manage.sync_status = self.client.as_mut().and_then(|c| c.sync_status().ok());
+        self.manage.stats = self.client.as_mut().and_then(|c| c.stats().ok());
+
+        match self.sync_cfg.clone() {
+            Some(cfg) => {
+                let slot = Arc::clone(&self.manage.server);
+                std::thread::spawn(move || {
+                    let res = fetch_server_status(&cfg);
+                    *slot.lock().unwrap() = Some(res);
+                });
+            }
+            None => {
+                // Pas de sync configurée : on regarde si un serveur tourne en local.
+                let slot = Arc::clone(&self.manage.probe_local);
+                std::thread::spawn(move || {
+                    let url = "http://127.0.0.1:7700";
+                    let found = http_agent().get(format!("{url}/v1/health")).call().is_ok();
+                    *slot.lock().unwrap() = found.then(|| url.to_string());
+                });
+            }
         }
     }
 
@@ -174,11 +303,18 @@ impl App {
             )
         });
         let tab = ctx.input(|i| i.key_pressed(egui::Key::Tab));
-        if tab && self.devices.len() > 1 {
+        if tab && self.screen == Screen::List && self.devices.len() > 1 {
             self.cycle_device_filter();
         }
         if esc {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            if self.screen == Screen::Manage {
+                self.screen = Screen::List;
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+        if self.screen != Screen::List {
+            return;
         }
         if down && !self.entries.is_empty() {
             self.selected = (self.selected + 1).min(self.entries.len() - 1);
@@ -295,12 +431,23 @@ impl App {
                     .hint_text(
                         RichText::new("Rechercher dans l'historique…").color(theme::OVERLAY),
                     )
-                    .desired_width(ui.available_width() - 18.0),
+                    .desired_width(ui.available_width() - 46.0),
             );
             search.request_focus();
             if search.changed() {
                 self.selected = 0;
                 self.needs_refresh = true;
+            }
+            let gear = ui.add(
+                egui::Button::new(
+                    RichText::new("⚙")
+                        .font(FontId::proportional(16.0))
+                        .color(theme::OVERLAY),
+                )
+                .frame(false),
+            );
+            if gear.on_hover_text("Gestion (état, serveur, connexions)").clicked() {
+                self.screen = Screen::Manage;
             }
         });
         ui.add_space(10.0);
@@ -501,6 +648,175 @@ impl App {
     }
 }
 
+impl App {
+    fn draw_manage(&mut self, ui: &mut egui::Ui) {
+        let inset = egui::Margin {
+            left: 18,
+            right: 18,
+            top: 8,
+            bottom: 8,
+        };
+        egui::Frame::new().inner_margin(inset).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Gestion")
+                        .font(FontId::proportional(17.0))
+                        .color(theme::TEXT),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new("échap retour").font(FontId::proportional(11.0)).color(theme::OVERLAY));
+                });
+            });
+            ui.add_space(10.0);
+
+            // --- Cette machine ---
+            section_title(ui, "Cette machine");
+            match (&self.manage.sync_status, &self.manage.stats) {
+                (Some(st), stats) => {
+                    if let Some((entries, bytes)) = stats {
+                        kv(ui, "Machine", &st.device, theme::TEXT);
+                        kv(ui, "Historique", &format!("{entries} entrées · {}", fmt_bytes(*bytes)), theme::TEXT);
+                    }
+                    if st.enabled {
+                        let (label, color) = if st.connected {
+                            ("● connectée", theme::OK)
+                        } else {
+                            ("● hors-ligne (retente)", theme::ERROR)
+                        };
+                        kv(ui, "Sync", label, color);
+                        if let Some(server) = &st.server {
+                            kv(ui, "Serveur", server, theme::SUBTEXT);
+                        }
+                        kv(
+                            ui,
+                            "File d'envoi",
+                            &if st.outbox == 0 {
+                                "vide".to_string()
+                            } else {
+                                format!("{} en attente", st.outbox)
+                            },
+                            if st.outbox == 0 { theme::SUBTEXT } else { theme::PIN },
+                        );
+                        kv(ui, "Curseur reçu", &format!("seq {}", st.last_seq), theme::SUBTEXT);
+                    } else {
+                        kv(ui, "Sync", "désactivée (pas de [sync] dans config.toml)", theme::OVERLAY);
+                    }
+                }
+                _ => {
+                    ui.label(RichText::new("Daemon injoignable").color(theme::ERROR));
+                }
+            }
+            ui.add_space(14.0);
+
+            // --- Serveur ---
+            section_title(ui, "Serveur");
+            if self.sync_cfg.is_some() {
+                let status = self.manage.server.lock().unwrap().clone();
+                match status {
+                    None => {
+                        ui.label(RichText::new("interrogation…").color(theme::OVERLAY));
+                    }
+                    Some(Err(e)) => {
+                        ui.label(RichText::new(e).color(theme::ERROR));
+                    }
+                    Some(Ok(s)) => {
+                        kv(ui, "Version", &s.version, theme::SUBTEXT);
+                        kv(ui, "En ligne depuis", &ago(s.started_at).replace("il y a ", ""), theme::SUBTEXT);
+                        kv(ui, "Journal", &format!("{} événements", s.events), theme::TEXT);
+                        kv(
+                            ui,
+                            "Objets",
+                            &format!("{} · {}", s.objects, fmt_bytes(s.objects_bytes)),
+                            theme::TEXT,
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(format!("Machines connectées ({})", s.clients.len()))
+                                .font(FontId::proportional(12.5))
+                                .color(theme::SUBTEXT),
+                        );
+                        for c in &s.clients {
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                ui.label(RichText::new("●").color(theme::OK).font(FontId::proportional(10.0)));
+                                ui.label(
+                                    RichText::new(&c.device)
+                                        .color(Self::device_color(&c.device))
+                                        .font(FontId::proportional(13.0)),
+                                );
+                                ui.label(
+                                    RichText::new(format!("connectée {}", ago(c.connected_at)))
+                                        .color(theme::OVERLAY)
+                                        .font(FontId::proportional(11.5)),
+                                );
+                            });
+                        }
+                        if s.clients.is_empty() {
+                            ui.label(RichText::new("aucune").color(theme::OVERLAY));
+                        }
+                    }
+                }
+            } else {
+                let probe = self.manage.probe_local.lock().unwrap().clone();
+                match probe {
+                    Some(url) => {
+                        ui.label(
+                            RichText::new(format!("Un serveur clipvault tourne en local ({url})."))
+                                .color(theme::PIN),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "Ajoute une section [sync] avec son URL et son jeton dans \
+                                 ~/.config/clipvault/config.toml puis redémarre le daemon.",
+                            )
+                            .color(theme::SUBTEXT)
+                            .font(FontId::proportional(12.5)),
+                        );
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new("Aucun serveur configuré ni détecté en local.")
+                                .color(theme::OVERLAY),
+                        );
+                    }
+                }
+            }
+        });
+    }
+}
+
+fn section_title(ui: &mut egui::Ui, title: &str) {
+    ui.label(
+        RichText::new(title.to_uppercase())
+            .font(FontId::proportional(11.0))
+            .color(theme::ACCENT),
+    );
+    ui.add_space(4.0);
+}
+
+fn kv(ui: &mut egui::Ui, key: &str, value: &str, color: Color32) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [120.0, 18.0],
+            egui::Label::new(
+                RichText::new(key)
+                    .font(FontId::proportional(12.5))
+                    .color(theme::OVERLAY),
+            ),
+        );
+        ui.label(RichText::new(value).font(FontId::proportional(13.0)).color(color));
+    });
+}
+
+fn fmt_bytes(b: u64) -> String {
+    match b {
+        0..=1023 => format!("{b} o"),
+        1024..=1048575 => format!("{:.1} Ko", b as f64 / 1024.0),
+        1048576..=1073741823 => format!("{:.1} Mo", b as f64 / 1048576.0),
+        _ => format!("{:.2} Go", b as f64 / 1073741824.0),
+    }
+}
+
 fn ago(ts: i64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -546,6 +862,12 @@ impl eframe::App for App {
             .stroke(egui::Stroke::new(1.0, theme::SURFACE1))
             .corner_radius(WINDOW_ROUNDING);
         egui::CentralPanel::default().frame(frame).show(root, |ui| {
+            if self.screen == Screen::Manage {
+                self.refresh_manage();
+                ctx.request_repaint_after(Duration::from_millis(800));
+                self.draw_manage(ui);
+                return;
+            }
             self.draw_search_bar(ui);
             self.draw_device_chips(ui);
 

@@ -9,6 +9,7 @@ pub const TEXT: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
 pub const SUBTEXT: Color32 = Color32::from_rgb(0xa6, 0xad, 0xc8);
 pub const OVERLAY: Color32 = Color32::from_rgb(0x6c, 0x70, 0x86);
 pub const ACCENT: Color32 = Color32::from_rgb(0x89, 0xb4, 0xfa);
+pub const OK: Color32 = Color32::from_rgb(0xa6, 0xe3, 0xa1);
 pub const PIN: Color32 = Color32::from_rgb(0xf9, 0xe2, 0xaf);
 pub const ERROR: Color32 = Color32::from_rgb(0xf3, 0x8b, 0xa8);
 

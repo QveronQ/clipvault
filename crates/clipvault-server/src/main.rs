@@ -20,9 +20,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use clipvault_core::sync::{PushAck, PushItem, SyncEvent};
+use clipvault_core::sync::{PushAck, PushItem, ServerClient, ServerStatus, SyncEvent};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -34,6 +36,42 @@ struct AppState {
     objects_dir: PathBuf,
     token: String,
     tx: broadcast::Sender<SyncEvent>,
+    started_at: i64,
+    clients: Mutex<HashMap<u64, ServerClient>>,
+    next_client_id: AtomicU64,
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Garde d'enregistrement d'un client connecté (désinscription au drop).
+struct ClientGuard {
+    state: Arc<AppState>,
+    id: u64,
+}
+
+impl ClientGuard {
+    fn register(state: Arc<AppState>, device: &str) -> Self {
+        let id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
+        state.clients.lock().unwrap().insert(
+            id,
+            ServerClient {
+                device: device.to_string(),
+                connected_at: now(),
+            },
+        );
+        Self { state, id }
+    }
+}
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        self.state.clients.lock().unwrap().remove(&self.id);
+    }
 }
 
 impl AppState {
@@ -94,6 +132,36 @@ fn device_from_headers(headers: &HeaderMap) -> String {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ServerStatus>, StatusCode> {
+    check_auth(&state, &headers)?;
+    let events: i64 = {
+        let db = state.db.lock().unwrap();
+        db.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    let (mut objects, mut objects_bytes) = (0u64, 0u64);
+    if let Ok(dir) = std::fs::read_dir(&state.objects_dir) {
+        for entry in dir.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                objects += 1;
+                objects_bytes += meta.len();
+            }
+        }
+    }
+    let clients = state.clients.lock().unwrap().values().cloned().collect();
+    Ok(Json(ServerStatus {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        started_at: state.started_at,
+        events,
+        objects,
+        objects_bytes,
+        clients,
+    }))
 }
 
 async fn push(
@@ -171,6 +239,7 @@ async fn ws_handler(
 
 async fn client_loop(mut socket: WebSocket, state: Arc<AppState>, since: i64, device: String) {
     info!("daemon connecté: {device} (since={since})");
+    let _guard = ClientGuard::register(Arc::clone(&state), &device);
     // S'abonner AVANT de rejouer le journal, pour ne rien perdre entre les deux.
     let mut rx = state.tx.subscribe();
     let mut last = since;
@@ -279,10 +348,14 @@ async fn main() -> Result<()> {
         objects_dir,
         token,
         tx,
+        started_at: now(),
+        clients: Mutex::new(HashMap::new()),
+        next_client_id: AtomicU64::new(1),
     });
 
     let app = Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/status", get(status))
         .route("/v1/push", post(push))
         .route("/v1/objects/{hash}", put(put_object).get(get_object))
         .route("/v1/ws", get(ws_handler))

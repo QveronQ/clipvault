@@ -320,6 +320,13 @@ impl Store {
         Ok(out)
     }
 
+    pub fn outbox_len(&self) -> Result<u64> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))?;
+        Ok(n as u64)
+    }
+
     pub fn outbox_remove(&self, seq: i64) -> Result<()> {
         self.conn.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
         Ok(())

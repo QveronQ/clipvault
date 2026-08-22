@@ -84,16 +84,29 @@ fn push_one(
 }
 
 /// Reçoit et applique le flux du serveur, indéfiniment (reconnexion auto).
-pub fn run_recv(store: Arc<Mutex<Store>>, cfg: SyncConfig, device_id: String) {
+/// `connected` reflète l'état de la connexion (pour l'IPC SyncStatus).
+pub fn run_recv(
+    store: Arc<Mutex<Store>>,
+    cfg: SyncConfig,
+    device_id: String,
+    connected: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
     loop {
-        if let Err(e) = recv_session(&store, &cfg, &device_id) {
+        if let Err(e) = recv_session(&store, &cfg, &device_id, &connected) {
             warn!("sync: connexion au flux perdue ({e}), retry dans 5 s");
         }
+        connected.store(false, Ordering::Relaxed);
         std::thread::sleep(RETRY_DELAY);
     }
 }
 
-fn recv_session(store: &Arc<Mutex<Store>>, cfg: &SyncConfig, device_id: &str) -> Result<()> {
+fn recv_session(
+    store: &Arc<Mutex<Store>>,
+    cfg: &SyncConfig,
+    device_id: &str,
+    connected: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
     let since = store.lock().unwrap().last_seq()?;
     let ws_base = cfg
         .server
@@ -104,6 +117,7 @@ fn recv_session(store: &Arc<Mutex<Store>>, cfg: &SyncConfig, device_id: &str) ->
         cfg.token
     );
     let (mut ws, _) = tungstenite::connect(&url).context("connexion WebSocket")?;
+    connected.store(true, std::sync::atomic::Ordering::Relaxed);
     info!("sync: connecté au flux (since={since})");
 
     loop {

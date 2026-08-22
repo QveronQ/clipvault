@@ -899,6 +899,7 @@ dependencies = [
  "image",
  "serde",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

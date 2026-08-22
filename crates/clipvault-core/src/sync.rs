@@ -62,6 +62,26 @@ pub struct PushAck {
     pub seq: i64,
 }
 
+/// Un daemon actuellement connecté au flux WebSocket du serveur.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerClient {
+    pub device: String,
+    /// Epoch secondes de la connexion.
+    pub connected_at: i64,
+}
+
+/// Réponse de GET /v1/status (interface de gestion).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerStatus {
+    pub version: String,
+    pub started_at: i64,
+    /// Dernier seq du journal (= nombre d'événements émis).
+    pub events: i64,
+    pub objects: u64,
+    pub objects_bytes: u64,
+    pub clients: Vec<ServerClient>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

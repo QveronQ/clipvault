@@ -26,6 +26,8 @@ pub enum Request {
     /// Contenu texte complet d'une entrée (aperçu détaillé côté UI).
     GetText { id: String },
     Stats,
+    /// État de la synchronisation du daemon.
+    SyncStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +37,20 @@ pub enum Response {
     Devices { devices: Vec<String> },
     Text { text: String },
     Stats { entries: u64, bytes: u64 },
+    SyncStatus {
+        /// Identifiant de cette machine.
+        device: String,
+        /// Une section [sync] est-elle configurée ?
+        enabled: bool,
+        /// URL du serveur configuré.
+        server: Option<String>,
+        /// Le flux WebSocket est-il actuellement connecté ?
+        connected: bool,
+        /// Événements locaux en attente d'envoi.
+        outbox: u64,
+        /// Curseur de réception (dernier seq serveur appliqué).
+        last_seq: i64,
+    },
     Ok,
     Error { message: String },
 }

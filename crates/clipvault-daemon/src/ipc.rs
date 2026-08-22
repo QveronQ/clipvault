@@ -2,16 +2,26 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
+use clipvault_core::config::SyncConfig;
 use clipvault_core::ipc::{Request, Response};
 use tracing::{debug, warn};
 
 use crate::clipboard;
 use crate::store::Store;
 
-pub fn serve(store: Arc<Mutex<Store>>) -> Result<()> {
+/// Contexte d'état de la sync, partagé avec les threads de sync.
+#[derive(Clone)]
+pub struct SyncCtx {
+    pub cfg: Option<SyncConfig>,
+    /// Mis à jour par le thread de réception (connecté au flux ou non).
+    pub connected: Arc<AtomicBool>,
+}
+
+pub fn serve(store: Arc<Mutex<Store>>, sync_ctx: SyncCtx) -> Result<()> {
     let path = clipvault_core::socket_path();
 
     // Un seul daemon à la fois : si le socket répond, on refuse de démarrer ;
@@ -31,8 +41,9 @@ pub fn serve(store: Arc<Mutex<Store>>) -> Result<()> {
         match conn {
             Ok(stream) => {
                 let store = Arc::clone(&store);
+                let sync_ctx = sync_ctx.clone();
                 std::thread::spawn(move || {
-                    if let Err(e) = handle_client(stream, store) {
+                    if let Err(e) = handle_client(stream, store, sync_ctx) {
                         debug!("client IPC terminé: {e}");
                     }
                 });
@@ -43,7 +54,7 @@ pub fn serve(store: Arc<Mutex<Store>>) -> Result<()> {
     Ok(())
 }
 
-fn handle_client(stream: UnixStream, store: Arc<Mutex<Store>>) -> Result<()> {
+fn handle_client(stream: UnixStream, store: Arc<Mutex<Store>>, sync_ctx: SyncCtx) -> Result<()> {
     let mut writer = stream.try_clone()?;
     let reader = BufReader::new(stream);
 
@@ -53,7 +64,7 @@ fn handle_client(stream: UnixStream, store: Arc<Mutex<Store>>) -> Result<()> {
             continue;
         }
         let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => handle_request(req, &store),
+            Ok(req) => handle_request(req, &store, &sync_ctx),
             Err(e) => Response::Error {
                 message: format!("requête invalide: {e}"),
             },
@@ -65,7 +76,7 @@ fn handle_client(stream: UnixStream, store: Arc<Mutex<Store>>) -> Result<()> {
     Ok(())
 }
 
-fn handle_request(req: Request, store: &Mutex<Store>) -> Response {
+fn handle_request(req: Request, store: &Mutex<Store>, sync_ctx: &SyncCtx) -> Response {
     let result = (|| -> Result<Response> {
         match req {
             Request::Search {
@@ -124,6 +135,17 @@ fn handle_request(req: Request, store: &Mutex<Store>) -> Response {
             Request::Stats => {
                 let (entries, bytes) = store.lock().unwrap().stats()?;
                 Ok(Response::Stats { entries, bytes })
+            }
+            Request::SyncStatus => {
+                let s = store.lock().unwrap();
+                Ok(Response::SyncStatus {
+                    device: s.device_id().to_string(),
+                    enabled: sync_ctx.cfg.is_some(),
+                    server: sync_ctx.cfg.as_ref().map(|c| c.server.clone()),
+                    connected: sync_ctx.connected.load(Ordering::Relaxed),
+                    outbox: s.outbox_len()?,
+                    last_seq: s.last_seq()?,
+                })
             }
         }
     })();

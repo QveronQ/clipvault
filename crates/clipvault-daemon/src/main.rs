@@ -51,7 +51,7 @@ fn main() -> Result<()> {
         cfg.data_dir().display()
     );
 
-    let store = Arc::new(Mutex::new(Store::open(cfg.clone(), device_id)?));
+    let store = Arc::new(Mutex::new(Store::open(cfg.clone(), device_id.clone())?));
 
     // Thread watcher Wayland -> canal -> thread d'ingestion.
     let (tx, rx) = mpsc::channel();
@@ -101,20 +101,19 @@ fn main() -> Result<()> {
         })?;
 
     // Synchronisation avec le serveur, si configurée.
+    let sync_connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
     if let Some(sync_cfg) = cfg.sync.clone() {
-        let device = {
-            let s = store.lock().unwrap();
-            s.device_id().to_string()
-        };
         let push_store = Arc::clone(&store);
-        let (push_cfg, push_device) = (sync_cfg.clone(), device.clone());
+        let (push_cfg, push_device) = (sync_cfg.clone(), device_id.clone());
         std::thread::Builder::new()
             .name("sync-push".into())
             .spawn(move || sync::run_push(push_store, push_cfg, push_device))?;
         let recv_store = Arc::clone(&store);
+        let recv_connected = Arc::clone(&sync_connected);
+        let recv_device = device_id.clone();
         std::thread::Builder::new()
             .name("sync-recv".into())
-            .spawn(move || sync::run_recv(recv_store, sync_cfg, device))?;
+            .spawn(move || sync::run_recv(recv_store, sync_cfg, recv_device, recv_connected))?;
     }
 
     // Purge périodique des vieilles entrées.
@@ -131,5 +130,11 @@ fn main() -> Result<()> {
         })?;
 
     // Serveur IPC sur le thread principal (bloquant).
-    ipc::serve(store)
+    ipc::serve(
+        store,
+        ipc::SyncCtx {
+            cfg: cfg.sync.clone(),
+            connected: sync_connected,
+        },
+    )
 }
