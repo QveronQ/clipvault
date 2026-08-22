@@ -202,6 +202,21 @@ les logs :
 | `0xE00002C5` exclusive access | un autre process tient l'appareil | tuer le second daemon |
 | `0xE00002C1` privilege violation | c'est un clavier — interdit par macOS | aucun, contourné par l'énumération |
 
+### Testé et écarté : « on veut seulement écrire, pas surveiller »
+
+Objection légitime — le Change Host est une écriture de 3 octets, on ne lit
+jamais rien de la souris. Pourquoi faudrait-il une autorisation de
+*surveillance* ?
+
+Parce que macOS n'offre qu'une porte, `IOHIDDeviceOpen`, qui donne lecture et
+écriture indissociablement ; la protection porte sur l'ouverture, pas sur
+l'usage. Vérifié : ouverture **non exclusive** (`set_open_exclusive(false)`),
+aucune lecture demandée, une seule écriture → même `0xE00002E2`. Inutile de
+retenter.
+
+`set_open_exclusive(false)` est conservé pour autre chose : il empêche le
+daemon de confisquer la souris au système (piège 4).
+
 ## Point d'attention sur le protocole de sync
 
 Relevé dans les logs pendant que mon daemon était en retard d'une version :

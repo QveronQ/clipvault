@@ -219,6 +219,11 @@ pub struct Engine {
 impl Engine {
     pub fn open(cfg: LogiConfig) -> Result<Self> {
         let api = HidApi::new()?;
+        // macOS : ouvrir en NON exclusif. Par défaut hidapi confisque
+        // l'appareil au système — la souris affiche son canal mais le pointeur
+        // ne bouge plus tant que le daemon tient le handle.
+        #[cfg(target_os = "macos")]
+        api.set_open_exclusive(false);
         let mut engine = Self {
             cfg,
             api,
