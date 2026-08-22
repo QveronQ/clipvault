@@ -42,6 +42,10 @@ const SWID: u8 = 0x0d;
 const READ_TIMEOUT_MS: i32 = 300;
 /// Anti-rebond : pas deux événements KeyboardHere en moins de 5 s.
 const COOLDOWN: Duration = Duration::from_secs(5);
+/// Tick rapide : dépilage des notifications (lecture locale, zéro radio).
+const FAST_TICK: Duration = Duration::from_millis(200);
+/// Un contrôle complet (pings, scan) tous les N ticks rapides (~1 s).
+const SLOW_EVERY: u8 = 5;
 /// Au-delà, on considère que le clavier n'est nulle part (éteint, batterie
 /// vide, troisième machine) et on cesse de promener la souris.
 const MAX_ORPHAN_SWITCHES: u8 = 3;
@@ -83,10 +87,13 @@ pub fn run(
     // qu'elle a la souris sans le clavier.
     let mut orphan_switches: u8 = 0;
     let mut kb_absent_ticks: u8 = 0;
+    let mut tick: u8 = 0;
 
     loop {
-        // Le canal sert aussi de tick (1 s).
-        match rx.recv_timeout(Duration::from_secs(1)) {
+        // Le canal sert aussi de tick rapide (200 ms) : chaque itération dépile
+        // les notifications (lecture locale) ; les pings et scans, coûteux en
+        // radio, ne tournent qu'un tick sur SLOW_EVERY (~1 s).
+        match rx.recv_timeout(FAST_TICK) {
             Ok(cmd) => {
                 let e = match ensure_engine(&mut engine, &cfg) {
                     Some(e) => e,
@@ -116,20 +123,56 @@ pub fn run(
             None => continue,
         };
 
-        // Bouton de bascule : à dépiler AVANT les pings (voir poll_button).
-        match e.poll_button() {
-            Ok(true) => {
-                let target = cfg
-                    .toggle_host
-                    .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
-                info!("logitech: bouton souris pressé, bascule vers l'hôte {target}");
-                if let Err(err) = switch_both(e, target) {
-                    warn!("logitech: bascule bouton: {err}");
-                }
-                continue; // clavier parti aussi : inutile de le sonder ce tick
+        // --- Tick rapide : notifications uniquement (aucune radio) ---
+        let events = e.drain_events().unwrap_or_default();
+        if events.button_pressed {
+            let target = cfg
+                .toggle_host
+                .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
+            info!("logitech: bouton souris pressé, bascule vers l'hôte {target}");
+            if let Err(err) = switch_both(e, target) {
+                warn!("logitech: bascule bouton: {err}");
             }
-            Ok(false) => {}
-            Err(err) => debug!("logitech: bouton: {err}"),
+            continue;
+        }
+        if events.kb_link_lost
+            && orphan_switches < MAX_ORPHAN_SWITCHES
+            && last_event.elapsed() >= COOLDOWN
+        {
+            // Le récepteur signale un lien clavier tombé : vérification express
+            // (double ping) pour écarter une simple mise en veille radio.
+            match e.keyboard_gone_confirmed() {
+                Ok(true) => {
+                    kb_present = Some(false);
+                    kb_absent_ticks = 2;
+                    if let Ok(true) = e.mouse_here() {
+                        let target = cfg
+                            .toggle_host
+                            .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
+                        last_event = Instant::now();
+                        orphan_switches += 1;
+                        info!(
+                            "logitech: clavier parti (notification), la souris le rejoint (hôte {target})"
+                        );
+                        if let Err(err) = e.switch_mouse(target) {
+                            warn!("logitech: suivi souris: {err}");
+                        }
+                    }
+                }
+                Ok(false) => debug!("logitech: lien clavier tombé mais il répond (veille radio)"),
+                Err(err) => debug!("logitech: vérification clavier: {err}"),
+            }
+            continue;
+        }
+
+        tick = tick.wrapping_add(1);
+        if !tick.is_multiple_of(SLOW_EVERY) {
+            continue;
+        }
+
+        // --- Tick lent (~1 s) : divert du bouton, pings de présence ---
+        if let Err(err) = e.poll_button() {
+            debug!("logitech: bouton: {err}");
         }
 
         let present = match e.keyboard_present() {
@@ -239,6 +282,15 @@ impl std::fmt::Debug for Target {
     }
 }
 
+/// Notifications dépilées lors d'un tick rapide.
+#[derive(Default)]
+struct DrainedEvents {
+    button_pressed: bool,
+    kb_link_lost: bool,
+    #[allow(dead_code)]
+    kb_link_back: bool,
+}
+
 /// État du bouton de bascule détourné sur la souris.
 struct ButtonCtx {
     dev_idx: u8,
@@ -308,8 +360,13 @@ impl Engine {
                 .map(|d| d.path().to_owned());
             if let Some(p) = path {
                 self.receiver = self.api.open_path(&p).ok();
-                if self.receiver.is_some() {
+                if let Some(r) = &self.receiver {
                     debug!("logitech: récepteur HID++ ouvert");
+                    // Sans ce flag, le récepteur ne pousse pas les événements
+                    // de connexion (0x41) dont dépend la détection rapide.
+                    if let Err(e) = enable_wireless_notifications(r) {
+                        debug!("logitech: activation notifications: {e}");
+                    }
                 }
             }
         }
@@ -596,11 +653,10 @@ impl Engine {
     /// tick précédent doivent être dépilées d'abord.
     /// Gère aussi le divert (re-pose après reconnexion). Renvoie true si le
     /// bouton de bascule vient d'être pressé.
-    pub fn poll_button(&mut self) -> Result<bool> {
+    pub fn poll_button(&mut self) -> Result<()> {
         let Some(cid) = self.button_cid() else {
-            return Ok(false);
+            return Ok(());
         };
-        let fired = self.drain_button_events()?;
         self.scan()?;
         let present = self.mouse_here()?;
         let arrived = present && self.mouse_present != Some(true);
@@ -609,27 +665,45 @@ impl Engine {
             // La souris est partie : le divert sera à refaire à son retour.
             self.button = None;
             self.mouse_handle = None;
-            return Ok(false);
+            return Ok(());
         }
         if arrived || self.button.is_none() {
             self.setup_button(cid)?;
         }
-        Ok(fired)
+        Ok(())
     }
 
-    /// Dépile les notifications en attente ; true si front montant sur le CID.
-    fn drain_button_events(&mut self) -> Result<bool> {
-        let Some(ctx) = &self.button else {
+    /// Le clavier est-il vraiment parti ? Deux pings espacés de 150 ms —
+    /// distingue « a quitté ce canal » d'un simple raté radio transitoire.
+    pub fn keyboard_gone_confirmed(&mut self) -> Result<bool> {
+        if self.keyboard_present()? {
             return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        Ok(!self.keyboard_present()?)
+    }
+
+    /// Dépile les notifications en attente : bouton détourné et événements de
+    /// lien du clavier (0x41, poussés par le récepteur — détection quasi
+    /// instantanée d'un départ, sans coût radio).
+    fn drain_events(&mut self) -> Result<DrainedEvents> {
+        let mut out = DrainedEvents::default();
+        let btn = self
+            .button
+            .as_ref()
+            .map(|c| (c.dev_idx, c.feat_idx, c.cid));
+        let mut pressed = self.button.as_ref().map(|c| c.pressed).unwrap_or(false);
+        let kb_slot = match &self.keyboard {
+            Some(Target::Receiver { slot }) => Some(*slot),
+            _ => None,
         };
-        let (dev_idx, feat_idx, cid) = (ctx.dev_idx, ctx.feat_idx, ctx.cid);
-        let mut pressed = ctx.pressed;
-        let mut fired = false;
         {
-            let dev: &HidDevice = match (&self.mouse, &self.receiver, &self.mouse_handle) {
-                (Some(Target::Receiver { .. }), Some(r), _) => r,
-                (Some(Target::Direct { .. }), _, Some(h)) => h,
-                _ => return Ok(false),
+            // Le récepteur porte notifications de lien ET événements de bouton ;
+            // en appairage direct, seul le handle souris peut parler.
+            let dev: &HidDevice = match (&self.receiver, &self.mouse_handle) {
+                (Some(r), _) => r,
+                (None, Some(h)) => h,
+                (None, None) => return Ok(out),
             };
             loop {
                 let mut buf = [0u8; 32];
@@ -638,25 +712,37 @@ impl Engine {
                     break;
                 }
                 // divertedButtonsEvent (event 0) : liste des CID pressés.
-                if buf[0] == 0x11 && buf[1] == dev_idx && buf[2] == feat_idx && buf[3] == 0x00 {
-                    debug!(
-                        "logitech: divertedButtonsEvent: {:02x?}",
-                        &buf[4..12]
-                    );
-                    let now_pressed = (0..4).any(|i| {
-                        u16::from_be_bytes([buf[4 + 2 * i], buf[5 + 2 * i]]) == cid
-                    });
-                    if now_pressed && !pressed {
-                        fired = true;
+                if let Some((dev_idx, feat_idx, cid)) = btn {
+                    if buf[0] == 0x11 && buf[1] == dev_idx && buf[2] == feat_idx && buf[3] == 0x00
+                    {
+                        debug!("logitech: divertedButtonsEvent: {:02x?}", &buf[4..12]);
+                        let now_pressed = (0..4).any(|i| {
+                            u16::from_be_bytes([buf[4 + 2 * i], buf[5 + 2 * i]]) == cid
+                        });
+                        if now_pressed && !pressed {
+                            out.button_pressed = true;
+                        }
+                        pressed = now_pressed;
                     }
-                    pressed = now_pressed;
+                }
+                // Notification de connexion (0x41) : bit 0x40 = lien NON établi.
+                if let Some(slot) = kb_slot {
+                    if buf[0] == 0x10 && buf[1] == slot && buf[2] == 0x41 {
+                        if buf[4] & 0x40 != 0 {
+                            debug!("logitech: notification: lien clavier perdu");
+                            out.kb_link_lost = true;
+                        } else {
+                            debug!("logitech: notification: lien clavier rétabli");
+                            out.kb_link_back = true;
+                        }
+                    }
                 }
             }
         }
         if let Some(ctx) = &mut self.button {
             ctx.pressed = pressed;
         }
-        Ok(fired)
+        Ok(out)
     }
 
     /// Sonde de diagnostic : liste les slots du récepteur et les devices directs.
@@ -876,6 +962,15 @@ fn hidpp_call(
         // Notification sans rapport : on continue à lire.
     }
     bail!("timeout HID++")
+}
+
+/// Active les notifications sans fil du récepteur (HID++ 1.0, SET_REGISTER
+/// 0x00, flag 0x000100) : il pousse alors les événements de connexion et de
+/// déconnexion (0x41) des périphériques appairés. L'accusé de réception est
+/// ignoré (il sera écarté par les lecteurs suivants comme rapport non attendu).
+fn enable_wireless_notifications(dev: &HidDevice) -> Result<()> {
+    dev.write(&[0x10, 0xff, 0x80, 0x00, 0x00, 0x01, 0x00])?;
+    Ok(())
 }
 
 /// Ping (root feature 0x0000, fonction 1). true = le device répond.
