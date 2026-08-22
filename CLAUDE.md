@@ -111,9 +111,13 @@ connexion au serveur dans `clipvault-ui`. Spécification :
   (le daemon ne recharge pas sa config à chaud pour l'instant).
 - Style : réutiliser `theme.rs` et les patterns existants (`kv`, `section_title`).
   Textes en français. Ne pas toucher au protocole ni au serveur.
-- Optionnel (si le reste est fait) : découverte mDNS `_clipvault._tcp` — côté
-  serveur l'annonce, côté UI la liste des serveurs découverts. Crate suggérée :
-  `mdns-sd`. Sinon, laisser au backlog.
+- Optionnel (si le reste est fait) : découverte mDNS. **L'annonce côté serveur
+  est FAITE** (`_clipvault._tcp.local.`, instance = hostname, TXT `version`,
+  désactivable par `CLIPVAULT_MDNS=0` ; crate `mdns-sd`). Reste la partie UI :
+  browse `_clipvault._tcp.local.` avec `mdns-sd` pendant que l'écran de
+  connexion est ouvert, proposer les instances résolues pour préremplir l'URL
+  (`http://<instance>.local:<port>`, ou une adresse IPv4 résolue ; ignorer les
+  IPv6 link-local des interfaces virtuelles type veth Docker).
 
 Pendant cette mission, l'agent Linux ne touche pas à `clipvault-ui` ni à
 `clipvault-core::config` (éviter les conflits). Coordination via commits sur

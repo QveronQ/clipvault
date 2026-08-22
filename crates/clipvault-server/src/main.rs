@@ -305,6 +305,28 @@ async fn send_event(socket: &mut WebSocket, ev: &SyncEvent) -> Result<()> {
     Ok(())
 }
 
+/// Annonce le serveur en mDNS (`_clipvault._tcp.local.`) pour la découverte
+/// sur le réseau local par l'écran de connexion de l'UI. Le handle retourné
+/// doit rester vivant. Désactivable avec CLIPVAULT_MDNS=0.
+fn announce_mdns(port: u16) -> Result<mdns_sd::ServiceDaemon> {
+    use mdns_sd::{ServiceDaemon, ServiceInfo};
+    let mdns = ServiceDaemon::new()?;
+    let host = hostname::get()
+        .map(|h| h.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "clipvault".into());
+    let info = ServiceInfo::new(
+        "_clipvault._tcp.local.",
+        &host,
+        &format!("{host}.local."),
+        "",
+        port,
+        &[("version", env!("CARGO_PKG_VERSION"))][..],
+    )?
+    .enable_addr_auto();
+    mdns.register(info)?;
+    Ok(mdns)
+}
+
 fn open_db(data_dir: &std::path::Path) -> Result<Connection> {
     let conn = Connection::open(data_dir.join("events.db"))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -361,6 +383,21 @@ async fn main() -> Result<()> {
         .route("/v1/ws", get(ws_handler))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(state);
+
+    let _mdns = if std::env::var("CLIPVAULT_MDNS").as_deref() == Ok("0") {
+        None
+    } else {
+        match announce_mdns(listen.port()) {
+            Ok(d) => {
+                info!("annonce mDNS _clipvault._tcp sur le port {}", listen.port());
+                Some(d)
+            }
+            Err(e) => {
+                warn!("mDNS indisponible ({e}), découverte locale désactivée");
+                None
+            }
+        }
+    };
 
     info!(
         "clipvault-server écoute sur {listen} (data: {})",
