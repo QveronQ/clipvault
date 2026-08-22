@@ -14,7 +14,7 @@ explicite du contraire.
 | Recopie (`Activate`) texte / image | ✅ |
 | Sync bidirectionnelle avec omarchie2 | ✅ dans les deux sens |
 | Écran de connexion au serveur (UI) | ✅ |
-| Easy-Switch Logitech en Bluetooth direct | ✅ après 4 correctifs |
+| Easy-Switch Logitech en Bluetooth direct | ✅ clavier ET souris pilotables |
 | Bundle `.app` + LaunchAgent | ✅ |
 | Bouton pouce de la souris (divert) | ❌ impossible sur macOS, désactivé — voir plus bas |
 
@@ -81,23 +81,29 @@ hidraw sous Linux renseigne-t-il `usage_page`/`usage` ? Si non, le chemin
 direct y exigera une config explicite. Ça ne touche pas le chemin récepteur,
 qui reste prioritaire et inchangé.
 
-### 2. Le clavier ne peut pas être ouvert du tout (`fd34548`)
+### 2. Le clavier : c'est l'ouverture EXCLUSIVE qui est refusée
 
-macOS refuse d'ouvrir un `IOHIDDevice` de type clavier :
-`kIOReturnNotPrivileged (0xE00002C1)`. Vérifié sur **toutes** les interfaces du
-MX Keys S (y compris l'interface HID++ `0xff43`), et **avec l'autorisation
-« Saisie de contenu » accordée** : elle ne couvre pas ce cas. C'est la
-protection anti-keylogger du noyau ; il faudrait root, que le projet s'interdit.
-La souris, elle, s'ouvre sans problème — la protection vise le type clavier.
+**Cette section disait d'abord « le clavier est impossible sans root ». C'était
+faux, et la correction vaut d'être lue.**
 
-Le ping HID++ est donc impossible sur un clavier macOS, et il passait pour
-absent en permanence. Contournement : **en Bluetooth, un périphérique ne figure
-dans l'énumération HID que s'il est connecté à la machine**. La présence se lit
-donc sans rien ouvrir, sans aucune autorisation. Vérifié en basculant le
-clavier d'un canal à l'autre : détecté en moins d'une seconde.
+Ouvrir un clavier échoue bien avec `kIOReturnNotPrivileged (0xE00002C1)`,
+sur toutes ses interfaces, et l'autorisation « Saisie de contenu » n'y change
+rien — d'où la conclusion hâtive. Mais hidapi ouvre **en exclusif par défaut**,
+et c'est cela que macOS refuse sur un clavier : lui céder le périphérique
+priverait le système de tes frappes.
 
-`keyboard_present()` utilise cette voie pour `Target::Direct` ; le chemin
-récepteur continue de pinguer comme avant.
+Avec `HidApi::set_open_exclusive(false)`, le clavier s'ouvre **normalement** :
+
+```
+Clavier (direct): ping ok, change-host oui (index 10), hôte 2/3
+```
+
+et le Change Host part sans difficulté — vérifié, le clavier quitte le Mac pour
+l'autre machine. Ni root, ni entitlement, ni LaunchDaemon privilégié.
+
+Ce qui reste vrai : la présence par énumération (piège suivant) fonctionne
+toujours et ne demande aucune autorisation ; elle reste le moyen le plus léger
+de savoir *où* est le clavier.
 
 ### 3. Le chemin du périphérique est périmé dès la première bascule (`fd34548`)
 
@@ -200,7 +206,7 @@ les logs :
 |---|---|---|
 | `0xE00002E2` not permitted | autorisation « Saisie de contenu » absente ou périmée | retirer/rajouter le binaire |
 | `0xE00002C5` exclusive access | un autre process tient l'appareil | tuer le second daemon |
-| `0xE00002C1` privilege violation | c'est un clavier — interdit par macOS | aucun, contourné par l'énumération |
+| `0xE00002C1` privilege violation | ouverture **exclusive** d'un clavier | ouvrir en non exclusif |
 
 ### Testé et écarté : « on veut seulement écrire, pas surveiller »
 

@@ -177,15 +177,17 @@ propre (« Surveillance de l'entrée » pour le binaire du daemon).
   change à chaque rebuild → retirer/re-cocher l'entrée dans Réglages puis
   redémarrer le LaunchAgent. Piste contre cette friction : signer avec une
   identité stable (certificat auto-signé dans le trousseau).
-- **Clavier : impossible même avec l'autorisation** (kIOReturnNotPrivileged,
-  protection noyau anti-keylogger ; seul root passe — double barrière
-  TCC + IOHIDFamily). **Prior art qui valide la voie root** :
-  github.com/omar16100/logi_mx_auto_switch (même matériel, même but) tourne en
-  LaunchDaemon root et passe les deux portes, sans entitlement privé. Si on y
-  va un jour : mini-helper privilégié dédié (`clipvault-hidhelper`, socket
-  local, périmètre ping/ChangeHost/divert uniquement), pas le daemon entier
-  en root. Ses garde-fous à copier : pas de bascule pendant veille/réveil,
-  timeout = état inconnu (on ne bascule pas à l'aveugle).
+- **Clavier : PILOTABLE, sans root.** La conclusion « mur root » de la version
+  précédente était fausse — elle venait de ce que hidapi ouvre en EXCLUSIF par
+  défaut, ce que macOS refuse sur un clavier (il perdrait tes frappes). Avec
+  `set_open_exclusive(false)`, `--logi-probe` donne « ping ok, change-host oui
+  (index 10), hôte 2/3 » et le Change Host part : vérifié sur MacBook Air,
+  MX Keys S en Bluetooth direct, le clavier quitte bien le Mac. Le helper root
+  et le prior art logi_mx_auto_switch n'ont donc plus lieu d'être : leur voie
+  root contournait un obstacle qui n'existe pas. Reste seulement, pour le
+  daemon en LaunchAgent, l'autorisation « Surveillance de l'entrée » — un
+  service n'hérite d'aucune autorisation, contrairement à un binaire lancé
+  depuis un terminal.
 - **Idée volée au même projet — feature 0x1815 (HostsInfo)** : le périphérique
   stocke les NOMS des machines appairées par canal. Permettrait d'auto-déduire
   `mouse_host`/`toggle_host` en matchant avec les device_id de la sync
