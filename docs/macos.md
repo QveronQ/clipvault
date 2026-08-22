@@ -14,7 +14,7 @@ explicite du contraire.
 | Recopie (`Activate`) texte / image | ✅ |
 | Sync bidirectionnelle avec omarchie2 | ✅ dans les deux sens |
 | Écran de connexion au serveur (UI) | ✅ |
-| Easy-Switch Logitech en Bluetooth direct | ✅ clavier ET souris pilotables |
+| Easy-Switch Logitech en Bluetooth direct | ✅ clavier ET souris pilotables, suivi automatique local |
 | Bundle `.app` + LaunchAgent | ✅ |
 | Bouton pouce de la souris (divert) | ❌ impossible sur macOS, désactivé — voir plus bas |
 
@@ -262,6 +262,20 @@ mesuré. Si la latence gêne, la bonne solution est un hotkey dans le daemon
 (`RegisterEventHotKey`, pas d'autorisation Accessibilité requise) — mais macOS
 exige une `CFRunLoop` sur le thread principal, or c'est l'IPC qui l'occupe : il
 faudrait les intervertir dans `main.rs`. **Non fait, à coordonner.**
+
+## Autorisation du daemon : ce qu'il faut retenir
+
+Un service lancé par launchd **n'hérite d'aucune autorisation**, contrairement à
+un binaire lancé depuis un terminal (qui bénéficie de celles du terminal). D'où
+un piège de diagnostic : `--logi-probe` peut annoncer « ping ok » depuis un
+shell pendant que le daemon échoue en `0xE00002E2`. Comparer les deux contextes,
+pas l'un ou l'autre.
+
+L'autorisation porte sur le binaire exact : le remplacer la casse, sans que
+l'entrée disparaisse du panneau. Retirer puis rajouter l'entrée après chaque
+déploiement — décocher/recocher ne suffit pas. Signer le daemon avec une
+identité stable (certificat auto-signé dans le trousseau `login`) devrait rendre
+l'autorisation permanente ; la piste est ouverte, **non vérifiée**.
 
 ## Reste à faire côté Mac
 

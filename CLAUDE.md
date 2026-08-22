@@ -216,9 +216,12 @@ Deux points à ne pas rater :
 - **`KeyboardHere` reste utile** au-delà de deux machines, où « l'autre » est
   ambigu. Le local d'abord, le réseau en secours.
 
-Implémenté côté Mac (`logi.rs`, fin de la boucle `run`), mais **pas encore
-vérifié en conditions réelles** : clavier et souris étaient tous deux sur
-omarchie2 au moment du test.
+**Vérifié côté Mac** (MacBook Air, MX Keys S + MX Master 3S en Bluetooth
+direct) : en envoyant le clavier seul sur omarchie2, le daemon a réagi de
+lui-même — `logitech: souris ici sans le clavier, elle le rejoint (hôte 1)` —
+et la souris a suivi sans que le serveur intervienne. Le même daemon a aussi
+piloté les DEUX appareils d'un coup (`souris + clavier envoyés vers l'hôte 1`),
+ce qui confirme au passage que le clavier est accessible sans root.
 
 - **Idée volée au même projet — feature 0x1815 (HostsInfo)** : le périphérique
   stocke les NOMS des machines appairées par canal. Permettrait d'auto-déduire
