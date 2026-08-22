@@ -15,6 +15,8 @@ pub const ERROR: Color32 = Color32::from_rgb(0xf3, 0x8b, 0xa8);
 
 /// Fontes UI candidates, par ordre de préférence (fallback : fontes egui).
 const FONT_CANDIDATES: &[&str] = &[
+    // macOS : San Francisco (les chemins Linux ci-dessous n'existent pas, on les saute).
+    "/System/Library/Fonts/SFNS.ttf",
     "/usr/share/fonts/inter/InterVariable.ttf",
     "/usr/share/fonts/TTF/Inter-Regular.ttf",
     "/usr/share/fonts/noto/NotoSans-Regular.ttf",
@@ -23,6 +25,8 @@ const FONT_CANDIDATES: &[&str] = &[
 
 /// Fallback pour les glyphes absents de la fonte UI (flèches, ⏎, symboles Nerd Font).
 const SYMBOL_FALLBACKS: &[&str] = &[
+    // macOS : couvre flèches, ⏎ et la ponctuation technique des keycaps du footer.
+    "/System/Library/Fonts/Apple Symbols.ttf",
     "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
     "/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf",
 ];

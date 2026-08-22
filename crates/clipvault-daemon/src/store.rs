@@ -226,7 +226,9 @@ impl Store {
 
     /// Applique une entrée reçue du serveur (id, device et horodatages préservés).
     /// `data` : blob téléchargé pour les entrées non-texte.
-    pub fn apply_remote_entry(&mut self, entry: &SyncEntry, data: Option<&[u8]>) -> Result<()> {
+    /// Renvoie `false` si l'entrée était déjà connue (même id ou même contenu)
+    /// ou inexploitable — rien n'a alors été inséré.
+    pub fn apply_remote_entry(&mut self, entry: &SyncEntry, data: Option<&[u8]>) -> Result<bool> {
         let m = &entry.meta;
         let exists: Option<String> = self
             .conn
@@ -242,9 +244,9 @@ impl Store {
             }
             (None, Some(d)) => match &entry.object_hash {
                 Some(h) => (h.clone(), d),
-                None => return Ok(()), // entrée binaire sans hash : illisible
+                None => return Ok(false), // entrée binaire sans hash : illisible
             },
-            (None, None) => return Ok(()), // blob indisponible : on ignore
+            (None, None) => return Ok(false), // blob indisponible : on ignore
         };
         if exists.is_some()
             || self
@@ -257,7 +259,7 @@ impl Store {
                 .optional()?
                 .is_some()
         {
-            return Ok(()); // déjà connue (id ou même contenu)
+            return Ok(false); // déjà connue (id ou même contenu)
         }
 
         let payload = self.write_payload(m.kind, &m.mime, &hash, data)?;
@@ -282,7 +284,7 @@ impl Store {
                 m.pinned as i64,
             ],
         )?;
-        Ok(())
+        Ok(true)
     }
 
     // ---- File d'attente de sync sortante ----

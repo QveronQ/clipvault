@@ -147,14 +147,22 @@ fn apply_event(store: &Arc<Mutex<Store>>, cfg: &SyncConfig, event: SyncEvent) {
                     Some(hash) => Some(fetch_object(cfg, hash)?),
                     None => None,
                 };
-                store
+                let inserted = store
                     .lock()
                     .unwrap()
                     .apply_remote_entry(&entry, data.as_deref())?;
-                info!(
-                    "sync: reçu {} de {} ({})",
-                    entry.meta.id, entry.meta.device_id, entry.meta.mime
-                );
+                if inserted {
+                    info!(
+                        "sync: reçu {} de {} ({})",
+                        entry.meta.id, entry.meta.device_id, entry.meta.mime
+                    );
+                } else {
+                    // Contenu déjà présent localement (dédup par hash) : normal.
+                    debug!(
+                        "sync: {} de {} ignorée (déjà connue)",
+                        entry.meta.id, entry.meta.device_id
+                    );
+                }
             }
             PushItem::Deleted { id } => {
                 store.lock().unwrap().delete(&id)?;

@@ -46,6 +46,10 @@ fn main() -> Result<()> {
             .map(|h| h.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "unknown".into())
     });
+    match Config::config_candidates().into_iter().find(|p| p.is_file()) {
+        Some(p) => info!("config chargée: {}", p.display()),
+        None => info!("aucun config.toml trouvé, valeurs par défaut"),
+    }
     info!(
         "clipvault-daemon démarre (device: {device_id}, data: {})",
         cfg.data_dir().display()
