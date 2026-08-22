@@ -53,6 +53,7 @@ impl Default for Config {
             ignore_password_hint: true,
             data_dir: None,
             sync: None,
+            logitech: None,
         }
     }
 }
