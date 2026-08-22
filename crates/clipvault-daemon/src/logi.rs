@@ -432,8 +432,14 @@ impl Engine {
                 let _ = hidpp_call(recv, *slot, fi, 1, &[host0]);
                 Ok(())
             }
-            Some(Target::Direct { path, pid }) => {
-                let path = self.resolve_direct(*pid).unwrap_or_else(|| path.clone());
+            Some(Target::Direct { pid, .. }) => {
+                // Plus énuméré = déjà parti sur une autre machine. Ouvrir le
+                // chemin mémorisé ne donnerait qu'une erreur hidapi opaque
+                // (« mach entry not found »), le chemin changeant à chaque
+                // reconnexion.
+                let path = self.resolve_direct(*pid).ok_or_else(|| {
+                    anyhow!("{label} introuvable ici (déjà parti sur une autre machine)")
+                })?;
                 let dev = self.api.open_path(&path)?;
                 let fi = hidpp_feature_index(&dev, 0xff, 0x1814)?
                     .ok_or_else(|| anyhow!("{label}: pas de feature Change Host"))?;
