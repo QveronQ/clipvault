@@ -29,6 +29,13 @@ const VID_LOGITECH: u16 = 0x046d;
 const RECEIVER_PIDS: &[u16] = &[0xc52b, 0xc548, 0xc534, 0xc539, 0xc53f];
 /// Page HID vendor des récepteurs (HID++) et des périphériques BLE.
 const HIDPP_USAGE_PAGES: &[u16] = &[0xff00, 0xff43];
+/// Page/usages HID standard, pour reconnaître un clavier d'une souris quand le
+/// périphérique est appairé en direct (pas de `getDeviceType` sans récepteur).
+const USAGE_PAGE_GENERIC_DESKTOP: u16 = 0x0001;
+const USAGE_MOUSE: u16 = 0x0002;
+const USAGE_KEYBOARD: u16 = 0x0006;
+/// Type non déterminable (la plateforme ne renseigne pas les usages HID).
+const DEVICE_TYPE_UNKNOWN: u8 = 0xff;
 const SWID: u8 = 0x0d;
 const READ_TIMEOUT_MS: i32 = 300;
 /// Anti-rebond : pas deux événements KeyboardHere en moins de 5 s.
@@ -200,7 +207,12 @@ impl Engine {
         }
 
         // 3. Périphériques HID++ directs (Bluetooth).
-        let direct: Vec<(std::ffi::CString, String)> = self
+        // Sans récepteur, pas de `getDeviceType` : le type se déduit des autres
+        // interfaces HID du même périphérique (Generic Desktop, usage 6 =
+        // clavier, 2 = souris). Sans cette déduction, tout HID++ trouvé
+        // passerait pour un clavier et la souris et le clavier se retrouvent
+        // intervertis selon l'ordre d'énumération.
+        let direct: Vec<(std::ffi::CString, String, u8)> = self
             .api
             .device_list()
             .filter(|d| {
@@ -212,13 +224,22 @@ impl Engine {
                 (
                     d.path().to_owned(),
                     d.product_string().unwrap_or_default().to_string(),
+                    self.desktop_device_type(d.product_id()),
                 )
             })
             .collect();
-        for (path, name) in direct {
-            if keyboard.is_none() && self.matches_keyboard(&name, 0) {
+        for (path, name, dtype) in direct {
+            if dtype == DEVICE_TYPE_UNKNOWN && self.cfg.keyboard.is_none() && self.cfg.mouse.is_none()
+            {
+                // Type indéterminable (plateforme qui ne renseigne pas les
+                // usages HID) : ne rien deviner — un Change Host envoyé au
+                // mauvais périphérique est pire que pas de bascule du tout.
+                debug!("logitech: {name}: type indéterminé, préciser [logitech] keyboard/mouse");
+                continue;
+            }
+            if keyboard.is_none() && self.matches_keyboard(&name, dtype) {
                 keyboard = Some(Target::Direct { path: path.clone() });
-            } else if mouse.is_none() && self.matches_mouse(&name, 3) {
+            } else if mouse.is_none() && self.matches_mouse(&name, dtype) {
                 mouse = Some(Target::Direct { path });
             }
         }
@@ -238,6 +259,27 @@ impl Engine {
             self.mouse = mouse;
         }
         Ok(())
+    }
+
+    /// Type HID++ déduit des interfaces Generic Desktop exposées par le même
+    /// périphérique (`product_id`), pour les appairages directs sans récepteur.
+    /// Renvoie les mêmes codes que la feature 0x0005 : 0 = clavier, 3 = souris.
+    fn desktop_device_type(&self, pid: u16) -> u8 {
+        let has = |usage: u16| {
+            self.api.device_list().any(|d| {
+                d.vendor_id() == VID_LOGITECH
+                    && d.product_id() == pid
+                    && d.usage_page() == USAGE_PAGE_GENERIC_DESKTOP
+                    && d.usage() == usage
+            })
+        };
+        if has(USAGE_KEYBOARD) {
+            0
+        } else if has(USAGE_MOUSE) {
+            3
+        } else {
+            DEVICE_TYPE_UNKNOWN
+        }
     }
 
     fn matches_keyboard(&self, name: &str, dtype: u8) -> bool {
@@ -331,6 +373,45 @@ impl Engine {
             "Clavier: {:?}\nSouris: {:?}\n",
             engine.keyboard, engine.mouse
         ));
+
+        // Détail des périphériques appairés en direct (Bluetooth, index 0xFF) :
+        // sans récepteur, la boucle ci-dessus n'affiche rien d'exploitable.
+        for (label, target) in [("Clavier", &engine.keyboard), ("Souris", &engine.mouse)] {
+            let Some(Target::Direct { path }) = target else {
+                continue;
+            };
+            let dev = match engine.api.open_path(path) {
+                Ok(d) => d,
+                Err(e) => {
+                    // Sur macOS, un refus ici = autorisation « Saisie de contenu »
+                    // manquante pour le binaire (Réglages > Confidentialité).
+                    out.push_str(&format!("  {label} (direct): ouverture impossible: {e}\n"));
+                    continue;
+                }
+            };
+            let ping = hidpp_ping(&dev, 0xff).unwrap_or(false);
+            let feat = hidpp_feature_index(&dev, 0xff, 0x1814).ok().flatten();
+            let hosts = match feat {
+                // 0x1814 fonction 0 (getHostInfo) : [nbHost, currHost] — lecture
+                // pure, elle ne fait basculer personne.
+                Some(fi) => hidpp_call(&dev, 0xff, fi, 0, &[])
+                    .ok()
+                    .map(|r| (r[0], r[1] + 1)),
+                None => None,
+            };
+            out.push_str(&format!(
+                "  {label} (direct): ping {}, change-host {}",
+                if ping { "ok" } else { "muet" },
+                match feat {
+                    Some(fi) => format!("oui (index {fi})"),
+                    None => "non".to_string(),
+                }
+            ));
+            match hosts {
+                Some((nb, cur)) => out.push_str(&format!(", hôte {cur}/{nb}\n")),
+                None => out.push('\n'),
+            }
+        }
         Ok(out)
     }
 }
