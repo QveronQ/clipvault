@@ -188,6 +188,38 @@ propre (« Surveillance de l'entrée » pour le binaire du daemon).
   daemon en LaunchAgent, l'autorisation « Surveillance de l'entrée » — un
   service n'hérite d'aucune autorisation, contrairement à un binaire lancé
   depuis un terminal.
+### Suivi local de la souris — À IMPLÉMENTER SYMÉTRIQUEMENT CÔTÉ LINUX
+
+Design proposé par Quentin, plus simple et plus robuste que le trajet par le
+serveur. Chaque machine applique la même règle dans sa boucle, sans rien
+échanger :
+
+```
+si le clavier est ici        -> compteur = 0, rien à faire
+sinon si la souris est ici   -> l'envoyer vers l'autre canal (compteur++)
+```
+
+Avec deux machines, « je n'ai pas le clavier » suffit à savoir où il est : plus
+besoin d'attendre l'aller-retour `KeyboardHere` par le serveur. La bascule
+devient instantanée et fonctionne **réseau coupé ou serveur éteint**. La
+détection de présence passe par l'énumération HID, qui ne demande aucune
+autorisation ; seule la bascule elle-même en exige une.
+
+Deux points à ne pas rater :
+
+- **le garde-fou est indispensable.** Sans lui la règle boucle : si le clavier
+  n'est nulle part (éteint, batterie vide, troisième machine), chaque machine
+  constate à son tour « j'ai la souris, pas le clavier » et se la renvoie
+  indéfiniment. D'où `MAX_ORPHAN_SWITCHES` (3 bascules consécutives sans revoir
+  le clavier, compteur remis à zéro dès son retour). En usage normal il ne se
+  déclenche jamais.
+- **`KeyboardHere` reste utile** au-delà de deux machines, où « l'autre » est
+  ambigu. Le local d'abord, le réseau en secours.
+
+Implémenté côté Mac (`logi.rs`, fin de la boucle `run`), mais **pas encore
+vérifié en conditions réelles** : clavier et souris étaient tous deux sur
+omarchie2 au moment du test.
+
 - **Idée volée au même projet — feature 0x1815 (HostsInfo)** : le périphérique
   stocke les NOMS des machines appairées par canal. Permettrait d'auto-déduire
   `mouse_host`/`toggle_host` en matchant avec les device_id de la sync

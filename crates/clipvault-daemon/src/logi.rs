@@ -42,6 +42,9 @@ const SWID: u8 = 0x0d;
 const READ_TIMEOUT_MS: i32 = 300;
 /// Anti-rebond : pas deux événements KeyboardHere en moins de 5 s.
 const COOLDOWN: Duration = Duration::from_secs(5);
+/// Au-delà, on considère que le clavier n'est nulle part (éteint, batterie
+/// vide, troisième machine) et on cesse de promener la souris.
+const MAX_ORPHAN_SWITCHES: u8 = 3;
 /// Feature « touches reprogrammables » (divert de boutons).
 const FEAT_REPROG_KEYS: u16 = 0x1b04;
 /// Bouton pouce des MX Master (CID par défaut du déclencheur de bascule).
@@ -74,6 +77,11 @@ pub fn run(
     let mut engine: Option<Engine> = None;
     let mut kb_present: Option<bool> = None;
     let mut last_event = Instant::now() - COOLDOWN;
+    // Bascules d'affilée sans avoir revu le clavier ici. Remis à zéro dès son
+    // retour ; sans ce garde-fou, un clavier éteint ferait rebondir la souris
+    // d'une machine à l'autre indéfiniment, chacune constatant à son tour
+    // qu'elle a la souris sans le clavier.
+    let mut orphan_switches: u8 = 0;
 
     loop {
         // Le canal sert aussi de tick (1 s).
@@ -146,6 +154,36 @@ pub fn run(
             }
         }
 
+        // Suivi local : la souris doit être là où est le clavier. Si le clavier
+        // n'est pas ici et que la souris y est encore, on l'envoie rejoindre
+        // l'autre machine — sans passer par le serveur, donc sans dépendre du
+        // réseau ni de la latence de la sync. L'événement KeyboardHere reste
+        // utile au-delà de deux machines, où « l'autre » est ambigu.
+        if present {
+            orphan_switches = 0;
+            continue;
+        }
+        if orphan_switches >= MAX_ORPHAN_SWITCHES || last_event.elapsed() < COOLDOWN {
+            continue;
+        }
+        match e.mouse_here() {
+            Ok(true) => {
+                let target = cfg
+                    .toggle_host
+                    .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
+                last_event = Instant::now();
+                orphan_switches += 1;
+                info!("logitech: souris ici sans le clavier, elle le rejoint (hôte {target})");
+                if let Err(err) = e.switch_mouse(target) {
+                    match explain_hid_error(&err) {
+                        Some(hint) => warn!("logitech: suivi souris: {err} — {hint}"),
+                        None => warn!("logitech: suivi souris: {err}"),
+                    }
+                }
+            }
+            Ok(false) => {}
+            Err(err) => debug!("logitech: sonde souris: {err}"),
+        }
     }
 }
 
