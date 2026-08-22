@@ -306,6 +306,9 @@ pub struct Engine {
     receiver: Option<HidDevice>,
     keyboard: Option<Target>,
     mouse: Option<Target>,
+    /// Dernière présence connue du clavier dans l'énumération HID, pour repérer
+    /// son départ en appairage direct (voir `drain_events`).
+    kb_listed: Option<bool>,
     last_scan: Instant,
     /// Handle persistant de la souris en appairage direct (lecture des
     /// notifications de bouton détourné).
@@ -328,6 +331,7 @@ impl Engine {
             receiver: None,
             keyboard: None,
             mouse: None,
+            kb_listed: None,
             last_scan: Instant::now() - Duration::from_secs(3600),
             mouse_handle: None,
             button: None,
@@ -688,6 +692,26 @@ impl Engine {
     /// instantanée d'un départ, sans coût radio).
     fn drain_events(&mut self) -> Result<DrainedEvents> {
         let mut out = DrainedEvents::default();
+
+        // Sans récepteur (appairage direct, cas macOS), personne ne pousse de
+        // notification 0x41. L'équivalent local est l'énumération : un
+        // périphérique Bluetooth n'y figure que s'il est connecté ICI, si bien
+        // que sa disparition signale le départ aussi vite qu'une notification —
+        // et sans solliciter la radio, contrairement à un ping.
+        if self.receiver.is_none() {
+            if let Some(Target::Direct { pid, .. }) = self.keyboard.clone() {
+                self.api.refresh_devices()?;
+                let listed = self
+                    .api
+                    .device_list()
+                    .any(|d| d.vendor_id() == VID_LOGITECH && d.product_id() == pid);
+                if self.kb_listed == Some(true) && !listed {
+                    out.kb_link_lost = true;
+                }
+                self.kb_listed = Some(listed);
+            }
+        }
+
         let btn = self
             .button
             .as_ref()

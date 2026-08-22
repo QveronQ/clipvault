@@ -239,11 +239,13 @@ Linux/récepteur : notifications de connexion 0x41 activées (SET_REGISTER 0x00,
 flag wireless) + boucle scindée (tick 200 ms dépile les notifications — lecture
 locale ; pings/scans inchangés à 1 s). Départ du clavier confirmé par double
 ping (150 ms) avant de faire suivre la souris → latence < 1 s, zéro radio en
-plus. Côté Mac (Bluetooth direct, pas de récepteur donc pas de 0x41) : au
-choix, énumération IOKit sur le tick rapide (locale, pas de radio — mesurer le
-coût CPU de refresh_devices à 5 Hz) ou callbacks de retrait IOHIDManager si
-hidapi les expose. La latence plancher reste le délai de détection de la
-déconnexion BT par macOS.
+plus. Côté Mac : **fait**, par énumération sur le tick rapide. Sans récepteur
+personne ne pousse de 0x41, mais un périphérique Bluetooth ne figure dans
+l'énumération HID que s'il est connecté ici — sa disparition vaut notification,
+sans coût radio. `refresh_devices` à 5 Hz : coût CPU mesuré nul (0,0 % contre
+0,0 % à 1 Hz). La latence plancher reste le délai de détection de la
+déconnexion BT par macOS, plus ~1 s de reconnexion de la souris sur son
+nouveau canal — incompressible, c'est le matériel.
 
 ### Backlog v2.x
 - macOS : `NSPasteboard.changeCount` (éviter la relecture d'images au polling),
