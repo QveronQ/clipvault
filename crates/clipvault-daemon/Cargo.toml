@@ -7,6 +7,7 @@ edition.workspace = true
 anyhow = "1.0.104"
 blake3 = "1.8.7"
 clipvault-core = { path = "../clipvault-core" }
+hidapi = "2.6.6"
 hostname = "0.4.2"
 image = "0.25.10"
 rusqlite = { version = "0.40.2", features = ["bundled"] }

@@ -17,6 +17,8 @@ pub struct Config {
     pub data_dir: Option<PathBuf>,
     /// Synchronisation avec un serveur clipvault (absent = pas de sync).
     pub sync: Option<SyncConfig>,
+    /// Suivi souris/clavier Logitech Easy-Switch (absent = désactivé).
+    pub logitech: Option<LogiConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +27,21 @@ pub struct SyncConfig {
     pub server: String,
     /// Jeton partagé (doit correspondre à celui du serveur).
     pub token: String,
+}
+
+/// Quand le clavier Logitech (Easy-Switch) arrive sur cette machine, la
+/// machine qui tient encore la souris reçoit l'info via le serveur de sync
+/// et lui envoie un Change Host (HID++ 0x1814) vers `mouse_host`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogiConfig {
+    /// Numéro Easy-Switch (1-3) de CETTE machine sur la souris.
+    pub mouse_host: u8,
+    /// Sous-chaîne du nom du clavier (ex. "MX Keys") ; défaut : par type.
+    #[serde(default)]
+    pub keyboard: Option<String>,
+    /// Sous-chaîne du nom de la souris (ex. "MX Master") ; défaut : par type.
+    #[serde(default)]
+    pub mouse: Option<String>,
 }
 
 impl Default for Config {

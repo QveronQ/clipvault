@@ -33,6 +33,14 @@ pub enum PushItem {
     Entry(SyncEntry),
     Deleted { id: String },
     Pinned { id: String, pinned: bool },
+    /// Le clavier Logitech vient d'arriver sur `device` : la machine qui tient
+    /// encore la souris doit l'envoyer vers l'hôte Easy-Switch `mouse_host`.
+    /// `ts` (epoch s) sert à ignorer les rejeux du journal.
+    KeyboardHere {
+        device: String,
+        mouse_host: u8,
+        ts: i64,
+    },
 }
 
 impl PushItem {
