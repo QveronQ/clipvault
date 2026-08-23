@@ -42,6 +42,9 @@ const SWID: u8 = 0x0d;
 const READ_TIMEOUT_MS: i32 = 300;
 /// Anti-rebond : pas deux événements KeyboardHere en moins de 5 s.
 const COOLDOWN: Duration = Duration::from_secs(5);
+/// Anti-rebond du suivi de la souris, distinct et plus court : on doit pouvoir
+/// re-suivre un clavier qui repart aussitôt après être arrivé (hésitation 2→1).
+const FOLLOW_COOLDOWN: Duration = Duration::from_secs(1);
 /// Tick rapide : dépilage des notifications (lecture locale, zéro radio).
 const FAST_TICK: Duration = Duration::from_millis(200);
 /// Un contrôle complet (pings, scan) tous les N ticks rapides (~1 s).
@@ -88,6 +91,7 @@ pub fn run(
     let mut orphan_switches: u8 = 0;
     let mut kb_absent_ticks: u8 = 0;
     let mut tick: u8 = 0;
+    let mut last_follow = Instant::now() - FOLLOW_COOLDOWN;
 
     loop {
         // Le canal sert aussi de tick rapide (200 ms) : chaque itération dépile
@@ -137,7 +141,7 @@ pub fn run(
         }
         if events.kb_link_lost
             && orphan_switches < MAX_ORPHAN_SWITCHES
-            && last_event.elapsed() >= COOLDOWN
+            && last_follow.elapsed() >= FOLLOW_COOLDOWN
         {
             // Le récepteur signale un lien clavier tombé : vérification express
             // (double ping) pour écarter une simple mise en veille radio.
@@ -149,7 +153,7 @@ pub fn run(
                         let target = cfg
                             .toggle_host
                             .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
-                        last_event = Instant::now();
+                        last_follow = Instant::now();
                         orphan_switches += 1;
                         info!(
                             "logitech: clavier parti (notification), la souris le rejoint (hôte {target})"
@@ -214,7 +218,7 @@ pub fn run(
         if kb_absent_ticks < 2 {
             continue;
         }
-        if orphan_switches >= MAX_ORPHAN_SWITCHES || last_event.elapsed() < COOLDOWN {
+        if orphan_switches >= MAX_ORPHAN_SWITCHES || last_follow.elapsed() < FOLLOW_COOLDOWN {
             continue;
         }
         match e.mouse_here() {
@@ -222,7 +226,7 @@ pub fn run(
                 let target = cfg
                     .toggle_host
                     .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
-                last_event = Instant::now();
+                last_follow = Instant::now();
                 orphan_switches += 1;
                 info!("logitech: souris ici sans le clavier, elle le rejoint (hôte {target})");
                 if let Err(err) = e.switch_mouse(target) {
