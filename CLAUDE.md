@@ -188,44 +188,26 @@ propre (« Surveillance de l'entrée » pour le binaire du daemon).
   daemon en LaunchAgent, l'autorisation « Surveillance de l'entrée » — un
   service n'hérite d'aucune autorisation, contrairement à un binaire lancé
   depuis un terminal.
-### Suivi local de la souris — À IMPLÉMENTER SYMÉTRIQUEMENT CÔTÉ LINUX
+### Suivi de la souris — PAR ARRIVÉE UNIQUEMENT (le suivi par absence est mort)
 
-Design proposé par Quentin, plus simple et plus robuste que le trajet par le
-serveur. Chaque machine applique la même règle dans sa boucle, sans rien
-échanger :
+Le suivi « par absence » (si la souris est ici sans le clavier → l'envoyer en
+face) a été retiré le 2026-08-25 : **la veille profonde du clavier coupe le
+lien radio et ne répond plus aux pings** — indistinguable d'un vrai départ, la
+souris partait toute seule pendant que Quentin travaillait. Ne pas le
+réintroduire sans résoudre ce point.
 
-```
-si le clavier est ici        -> compteur = 0, rien à faire
-sinon si la souris est ici   -> l'envoyer vers l'autre canal (compteur++)
-```
+Règle actuelle : un clavier endormi n'apparaît NULLE PART ; un clavier switché
+APPARAÎT sur sa cible. Seule l'arrivée fait foi. La machine qui voit le clavier
+arriver publie `KeyboardHere` (serveur), la machine qui tient la souris la fait
+suivre. Sur récepteur, l'arrivée est détectée en un tick rapide via la
+notification 0x41 « lien rétabli » ; ailleurs, par le ping lent (~1 s).
+Corollaire assumé : réveiller le clavier sur une machine rapatrie la souris
+vers elle (c'est le contrat « la souris suit le clavier »). Coût : la bascule
+dépend du serveur — garde-fous : anti-rebond COOLDOWN 5 s, anti-rejeu 15 s.
 
-Avec deux machines, « je n'ai pas le clavier » suffit à savoir où il est : plus
-besoin d'attendre l'aller-retour `KeyboardHere` par le serveur. La bascule
-devient instantanée et fonctionne **réseau coupé ou serveur éteint**. La
-détection de présence passe par l'énumération HID, qui ne demande aucune
-autorisation ; seule la bascule elle-même en exige une.
-
-Deux points à ne pas rater :
-
-- **le garde-fou est indispensable.** Sans lui la règle boucle : si le clavier
-  n'est nulle part (éteint, batterie vide, troisième machine), chaque machine
-  constate à son tour « j'ai la souris, pas le clavier » et se la renvoie
-  indéfiniment. D'où `MAX_ORPHAN_SWITCHES` (3 bascules consécutives sans revoir
-  le clavier, compteur remis à zéro dès son retour). En usage normal il ne se
-  déclenche jamais.
-- **Corrigé** (`FOLLOW_COOLDOWN` 1 s, distinct du `COOLDOWN` 5 s de
-  KeyboardHere) : le suivi de la souris a son propre anti-rebond, un clavier
-  qui repart aussitôt après être arrivé est bien suivi. Le garde-fou
-  anti-boucle reste `MAX_ORPHAN_SWITCHES`.
-- **`KeyboardHere` reste utile** au-delà de deux machines, où « l'autre » est
-  ambigu. Le local d'abord, le réseau en secours.
-
-**Vérifié côté Mac** (MacBook Air, MX Keys S + MX Master 3S en Bluetooth
-direct) : en envoyant le clavier seul sur omarchie2, le daemon a réagi de
-lui-même — `logitech: souris ici sans le clavier, elle le rejoint (hôte 1)` —
-et la souris a suivi sans que le serveur intervienne. Le même daemon a aussi
-piloté les DEUX appareils d'un coup (`souris + clavier envoyés vers l'hôte 1`),
-ce qui confirme au passage que le clavier est accessible sans root.
+Les touches Easy-Switch du clavier (CID 0xD1-0xD3) sont **non détournables**
+(flag divert absent, sondé sur MX Keys S) : impossible d'intercepter l'appui
+pour rendre la bascule déterministe côté firmware.
 
 - **Idée volée au même projet — feature 0x1815 (HostsInfo)** : le périphérique
   stocke les NOMS des machines appairées par canal. Permettrait d'auto-déduire

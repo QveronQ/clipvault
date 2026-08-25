@@ -42,16 +42,10 @@ const SWID: u8 = 0x0d;
 const READ_TIMEOUT_MS: i32 = 300;
 /// Anti-rebond : pas deux événements KeyboardHere en moins de 5 s.
 const COOLDOWN: Duration = Duration::from_secs(5);
-/// Anti-rebond du suivi de la souris, distinct et plus court : on doit pouvoir
-/// re-suivre un clavier qui repart aussitôt après être arrivé (hésitation 2→1).
-const FOLLOW_COOLDOWN: Duration = Duration::from_secs(1);
 /// Tick rapide : dépilage des notifications (lecture locale, zéro radio).
 const FAST_TICK: Duration = Duration::from_millis(200);
 /// Un contrôle complet (pings, scan) tous les N ticks rapides (~1 s).
 const SLOW_EVERY: u8 = 5;
-/// Au-delà, on considère que le clavier n'est nulle part (éteint, batterie
-/// vide, troisième machine) et on cesse de promener la souris.
-const MAX_ORPHAN_SWITCHES: u8 = 3;
 /// Feature « touches reprogrammables » (divert de boutons).
 const FEAT_REPROG_KEYS: u16 = 0x1b04;
 /// Bouton pouce des MX Master (CID par défaut du déclencheur de bascule).
@@ -84,14 +78,7 @@ pub fn run(
     let mut engine: Option<Engine> = None;
     let mut kb_present: Option<bool> = None;
     let mut last_event = Instant::now() - COOLDOWN;
-    // Bascules d'affilée sans avoir revu le clavier ici. Remis à zéro dès son
-    // retour ; sans ce garde-fou, un clavier éteint ferait rebondir la souris
-    // d'une machine à l'autre indéfiniment, chacune constatant à son tour
-    // qu'elle a la souris sans le clavier.
-    let mut orphan_switches: u8 = 0;
-    let mut kb_absent_ticks: u8 = 0;
     let mut tick: u8 = 0;
-    let mut last_follow = Instant::now() - FOLLOW_COOLDOWN;
 
     loop {
         // Le canal sert aussi de tick rapide (200 ms) : chaque itération dépile
@@ -139,32 +126,30 @@ pub fn run(
             }
             continue;
         }
-        if events.kb_link_lost
-            && orphan_switches < MAX_ORPHAN_SWITCHES
-            && last_follow.elapsed() >= FOLLOW_COOLDOWN
-        {
-            // Le récepteur signale un lien clavier tombé : vérification express
-            // (double ping) pour écarter une simple mise en veille radio.
-            match e.keyboard_gone_confirmed() {
-                Ok(true) => {
-                    kb_present = Some(false);
-                    kb_absent_ticks = 2;
-                    if let Ok(true) = e.mouse_here() {
-                        let target = cfg
-                            .toggle_host
-                            .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
-                        last_follow = Instant::now();
-                        orphan_switches += 1;
-                        info!(
-                            "logitech: clavier parti (notification), la souris le rejoint (hôte {target})"
-                        );
-                        if let Err(err) = e.switch_mouse(target) {
-                            warn!("logitech: suivi souris: {err}");
-                        }
-                    }
-                }
-                Ok(false) => debug!("logitech: lien clavier tombé mais il répond (veille radio)"),
-                Err(err) => debug!("logitech: vérification clavier: {err}"),
+        // Suivi PAR ARRIVÉE uniquement. L'ancien suivi « par absence » est
+        // abandonné : la veille profonde du clavier coupe le lien radio et ne
+        // répond plus aux pings — indistinguable d'un vrai départ, la souris
+        // partait toute seule. Un clavier endormi n'APPARAÎT nulle part ; un
+        // clavier switché apparaît sur sa cible : c'est le seul signal fiable,
+        // et il transite par le serveur (KeyboardHere).
+        if events.kb_link_lost {
+            kb_present = Some(false); // mémorisé, sans agir
+        }
+        if events.kb_link_back && kb_present != Some(true) && last_event.elapsed() >= COOLDOWN {
+            // Lien rétabli poussé par le récepteur : arrivée détectée en un
+            // tick rapide, sans attendre le ping lent. Peut aussi être un
+            // réveil de veille — inoffensif : rapatrier la souris là où le
+            // clavier vient de se manifester est précisément le contrat.
+            kb_present = Some(true);
+            last_event = Instant::now();
+            info!("logitech: clavier connecté ici (notification), on rapatrie la souris");
+            let item = PushItem::KeyboardHere {
+                device: device_id.clone(),
+                mouse_host: cfg.mouse_host,
+                ts: now(),
+            };
+            if let Err(err) = store.lock().unwrap().enqueue(&item) {
+                warn!("logitech: enqueue: {err}");
             }
             continue;
         }
@@ -202,43 +187,6 @@ pub fn run(
             }
         }
 
-        // Suivi local : la souris doit être là où est le clavier. Si le clavier
-        // n'est pas ici et que la souris y est encore, on l'envoie rejoindre
-        // l'autre machine — sans passer par le serveur, donc sans dépendre du
-        // réseau ni de la latence de la sync. L'événement KeyboardHere reste
-        // utile au-delà de deux machines, où « l'autre » est ambigu.
-        if present {
-            orphan_switches = 0;
-            kb_absent_ticks = 0;
-            continue;
-        }
-        // Un ping peut échouer transitoirement (radio occupée) : exiger deux
-        // ticks absents consécutifs avant d'arracher la souris à l'utilisateur.
-        kb_absent_ticks = kb_absent_ticks.saturating_add(1);
-        if kb_absent_ticks < 2 {
-            continue;
-        }
-        if orphan_switches >= MAX_ORPHAN_SWITCHES || last_follow.elapsed() < FOLLOW_COOLDOWN {
-            continue;
-        }
-        match e.mouse_here() {
-            Ok(true) => {
-                let target = cfg
-                    .toggle_host
-                    .unwrap_or(if cfg.mouse_host == 1 { 2 } else { 1 });
-                last_follow = Instant::now();
-                orphan_switches += 1;
-                info!("logitech: souris ici sans le clavier, elle le rejoint (hôte {target})");
-                if let Err(err) = e.switch_mouse(target) {
-                    match explain_hid_error(&err) {
-                        Some(hint) => warn!("logitech: suivi souris: {err} — {hint}"),
-                        None => warn!("logitech: suivi souris: {err}"),
-                    }
-                }
-            }
-            Ok(false) => {}
-            Err(err) => debug!("logitech: sonde souris: {err}"),
-        }
     }
 }
 
@@ -681,15 +629,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Le clavier est-il vraiment parti ? Deux pings espacés de 150 ms —
-    /// distingue « a quitté ce canal » d'un simple raté radio transitoire.
-    pub fn keyboard_gone_confirmed(&mut self) -> Result<bool> {
-        if self.keyboard_present()? {
-            return Ok(false);
-        }
-        std::thread::sleep(Duration::from_millis(150));
-        Ok(!self.keyboard_present()?)
-    }
 
     /// Dépile les notifications en attente : bouton détourné et événements de
     /// lien du clavier (0x41, poussés par le récepteur — détection quasi
@@ -871,8 +810,9 @@ impl Engine {
             }
         }
 
-        // Boutons détournables de la souris (candidats pour [logitech] button_cid).
-        let mouse_cids = (|| -> Option<String> {
+        // Touches/boutons détournables (feature 0x1b04) des deux périphériques.
+        // flags1 (octet 4 de getCidInfo) : 0x20 = divertable.
+        let list_cids = |target: &Option<Target>| -> Option<String> {
             let list = |dev: &HidDevice, dev_idx: u8| -> Option<String> {
                 let fi = hidpp_feature_index(dev, dev_idx, FEAT_REPROG_KEYS)
                     .ok()
@@ -881,12 +821,14 @@ impl Engine {
                 let mut line = String::new();
                 for i in 0..count {
                     if let Ok(r) = hidpp_call(dev, dev_idx, fi, 1, &[i]) {
-                        line.push_str(&format!("0x{:04x} ", u16::from_be_bytes([r[0], r[1]])));
+                        let cid = u16::from_be_bytes([r[0], r[1]]);
+                        let divert = if r[4] & 0x20 != 0 { "D" } else { "-" };
+                        line.push_str(&format!("0x{cid:04x}[{divert}] "));
                     }
                 }
                 Some(line)
             };
-            match &engine.mouse {
+            match target {
                 Some(Target::Receiver { slot }) => list(engine.receiver.as_ref()?, *slot),
                 Some(Target::Direct { path, pid }) => {
                     let path = engine.resolve_direct(*pid).unwrap_or_else(|| path.clone());
@@ -894,11 +836,12 @@ impl Engine {
                 }
                 None => None,
             }
-        })();
-        if let Some(cids) = mouse_cids {
-            out.push_str(&format!(
-                "Boutons souris (CID 0x1b04): {cids}— bouton pouce MX Master = 0x00c3\n"
-            ));
+        };
+        if let Some(cids) = list_cids(&engine.mouse) {
+            out.push_str(&format!("Boutons souris (CID[D=divertable]): {cids}\n"));
+        }
+        if let Some(cids) = list_cids(&engine.keyboard) {
+            out.push_str(&format!("Touches clavier (CID[D=divertable]): {cids}\n"));
         }
         Ok(out)
     }
