@@ -205,6 +205,11 @@ Corollaire assumé : réveiller le clavier sur une machine rapatrie la souris
 vers elle (c'est le contrat « la souris suit le clavier »). Coût : la bascule
 dépend du serveur — garde-fous : anti-rebond COOLDOWN 5 s, anti-rejeu 15 s.
 
+Côté Mac (appairage direct, aucun récepteur pour pousser du 0x41) : l'arrivée
+est détectée sur le tick rapide par l'ÉNUMÉRATION HID — un périphérique
+Bluetooth n'y figure que s'il est connecté ici, apparition = arrivée, sans coût
+radio. Symétrique de la notification 0x41, même latence.
+
 Les touches Easy-Switch du clavier (CID 0xD1-0xD3) sont **non détournables**
 (flag divert absent, sondé sur MX Keys S) : impossible d'intercepter l'appui
 pour rendre la bascule déterministe côté firmware.

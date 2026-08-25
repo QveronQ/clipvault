@@ -136,8 +136,9 @@ pub fn run(
             kb_present = Some(false); // mémorisé, sans agir
         }
         if events.kb_link_back && kb_present != Some(true) && last_event.elapsed() >= COOLDOWN {
-            // Lien rétabli poussé par le récepteur : arrivée détectée en un
-            // tick rapide, sans attendre le ping lent. Peut aussi être un
+            // Lien rétabli : notification 0x41 du récepteur, ou apparition
+            // dans l'énumération HID en appairage direct. Arrivée détectée en
+            // un tick rapide, sans attendre le ping lent. Peut aussi être un
             // réveil de veille — inoffensif : rapatrier la souris là où le
             // clavier vient de se manifester est précisément le contrat.
             kb_present = Some(true);
@@ -239,7 +240,6 @@ impl std::fmt::Debug for Target {
 struct DrainedEvents {
     button_pressed: bool,
     kb_link_lost: bool,
-    #[allow(dead_code)]
     kb_link_back: bool,
 }
 
@@ -629,7 +629,6 @@ impl Engine {
         Ok(())
     }
 
-
     /// Dépile les notifications en attente : bouton détourné et événements de
     /// lien du clavier (0x41, poussés par le récepteur — détection quasi
     /// instantanée d'un départ, sans coût radio).
@@ -639,8 +638,10 @@ impl Engine {
         // Sans récepteur (appairage direct, cas macOS), personne ne pousse de
         // notification 0x41. L'équivalent local est l'énumération : un
         // périphérique Bluetooth n'y figure que s'il est connecté ICI, si bien
-        // que sa disparition signale le départ aussi vite qu'une notification —
-        // et sans solliciter la radio, contrairement à un ping.
+        // qu'elle signale arrivée et départ aussi vite qu'une notification — et
+        // sans solliciter la radio, contrairement à un ping. C'est l'arrivée
+        // qui compte désormais : elle publie KeyboardHere sans attendre le
+        // tick lent.
         if self.receiver.is_none() {
             if let Some(Target::Direct { pid, .. }) = self.keyboard.clone() {
                 self.api.refresh_devices()?;
@@ -648,8 +649,10 @@ impl Engine {
                     .api
                     .device_list()
                     .any(|d| d.vendor_id() == VID_LOGITECH && d.product_id() == pid);
-                if self.kb_listed == Some(true) && !listed {
-                    out.kb_link_lost = true;
+                match self.kb_listed {
+                    Some(true) if !listed => out.kb_link_lost = true,
+                    Some(false) if listed => out.kb_link_back = true,
+                    _ => {}
                 }
                 self.kb_listed = Some(listed);
             }
